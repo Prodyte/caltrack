@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Thali</title>
+<title>CalTrack</title>
 <meta name="description" content="A private calorie tracker that works offline.">
 <meta name="theme-color" content="#DDE2DF">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Thali">
+<meta name="apple-mobile-web-app-title" content="CalTrack">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
@@ -86,6 +86,23 @@ main { max-width: 640px; margin: auto; padding: 0 var(--gut) calc(env(safe-area-
 .row .name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .row small { display: block; color: var(--muted); font-size: 15px; }
 .row .kcal { font-weight: 700; white-space: nowrap; }
+.copy { display: block; width: 100%; min-height: 44px; text-align: left; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.nudge { margin-top: 24px; padding: 14px 0; border-block: 1px solid var(--line); }
+.nudge p { margin: 0 0 4px; }
+.weeknote { color: var(--muted); font-size: 15px; margin: 10px 0 0; }
+.foodline { display: flex; align-items: stretch; border-top: 1px solid var(--line); }
+.foodline .row { flex: 1; min-width: 0; border-top: 0; }
+.foodline .repeat { flex: none; width: 44px; margin-right: -10px; }
+.tools { margin: 0 0 6px; }
+#toast { position: fixed; z-index: 3; left: var(--gut); right: var(--gut); bottom: calc(env(safe-area-inset-bottom) + 84px); max-width: 608px; margin: auto; display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 8px 6px 16px;
+  background: var(--button); color: var(--button-ink); border-radius: 12px; box-shadow: 0 6px 20px rgb(0 0 0 / .25); }
+#toast span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toast button { min-height: 44px; padding: 0 12px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+label select { appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2355625D' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 20px; padding-right: 40px; }
+label select { margin-top: 5px; font-weight: 400; }
+.grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.suggest { margin: 20px 0 8px; min-height: 76px; }
+.suggest b { display: block; font-size: 44px; font-weight: 800; line-height: 1.05; letter-spacing: -.02em; }
 .hint { color: var(--muted); padding: 14px 0; margin: 0; }
 
 #week { margin-top: 30px; }
@@ -137,7 +154,7 @@ label input { margin-top: 5px; font-weight: 400; }
 .note { color: var(--muted); font-size: 15px; margin: 8px 0; }
 .error { color: var(--over); font-weight: 600; margin: 8px 0; }
 .error:empty { display: none; }
-.stack { overflow-y: auto; flex: 1; display: flex; flex-direction: column; }
+.stack { overflow-y: auto; flex: 1; display: flex; flex-direction: column; margin-inline: -4px; padding-inline: 4px; }
 .stack section { padding: 14px 0; border-top: 1px solid var(--line); }
 .stack h3 { margin: 0 0 4px; font-size: 18px; }
 .outline { min-height: 48px; padding: 0 18px; margin: 6px 8px 0 0; border: 1px solid var(--muted); border-radius: 24px; font-weight: 600; }
@@ -172,6 +189,7 @@ label input { margin-top: 5px; font-weight: 400; }
   <section id="week"></section>
 </main>
 <button id="add">Add food</button>
+<div id="toast" role="status" hidden><span id="toasttext"></span><button id="undo">Undo</button></div>
 <dialog id="sheet"><div id="sheetbody"></div></dialog>
 <script type="module" src="app.js"></script>
 </body>

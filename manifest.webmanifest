@@ -1,6 +1,6 @@
 {
-  "name": "Thali",
-  "short_name": "Thali",
+  "name": "CalTrack",
+  "short_name": "CalTrack",
   "description": "A private calorie tracker that works offline.",
   "id": "./",
   "start_url": "./",

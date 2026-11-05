@@ -1,7 +1,7 @@
 // Pure logic, no DOM, so scripts/check.mjs can run it under node.
 
 export const MEALS = ["Breakfast", "Lunch", "Dinner", "Snacks"];
-const SOURCE_ORDER = { C: 0, F: 1, I: 2, S: 3 };
+const SOURCE_ORDER = { C: 0, F: 1, I: 2, P: 3, S: 4 };
 
 // Names people type here versus the words the datasets use.
 const SYNONYMS = {
@@ -91,11 +91,37 @@ export function recentNames(days, limit = 30) {
   const seen = new Map();
   for (const date of Object.keys(days).sort().reverse()) {
     for (const e of [...days[date]].reverse()) {
-      if (!seen.has(e.name)) seen.set(e.name, e);
+      if (e.src !== "Q" && !seen.has(e.name)) seen.set(e.name, e);
       if (seen.size >= limit) return seen;
     }
   }
   return seen;
+}
+
+export function copyEntries(entries, meal) {
+  return entries.filter((e) => e.meal === meal).map((e) => ({ ...e, id: crypto.randomUUID() }));
+}
+
+// Average of finished days only: today's half-logged total would drag it down.
+export function averageKcal(dates, kcals, today) {
+  const done = kcals.filter((k, i) => k > 0 && dates[i] !== today);
+  return done.length ? { kcal: done.reduce((a, b) => a + b, 0) / done.length, days: done.length } : null;
+}
+
+export const ACTIVITY = { "Mostly sitting": 1.2, "Light, 1–3 workouts a week": 1.375, "Moderate, 3–5 workouts a week": 1.55, "Very active, 6–7 workouts a week": 1.725 };
+export const PACE = { "Lose about 0.5 kg a week": -500, "Stay the same": 0, "Gain slowly": 300 };
+
+// Mifflin-St Jeor, rounded to 50 kcal. Returns null until the inputs are believable.
+export function suggestGoal({ sex, age, height, weight, activity, pace }) {
+  if (!(age >= 15 && age <= 100 && height >= 100 && height <= 250 && weight >= 30 && weight <= 300)) return null;
+  if (!(activity in ACTIVITY) || !(pace in PACE)) return null;
+  const rest = 10 * weight + 6.25 * height - 5 * age + (sex === "Female" ? -161 : 5);
+  return Math.max(1200, Math.round((rest * ACTIVITY[activity] + PACE[pace]) / 50) * 50);
+}
+
+export function backupDue(days, lastBackup, today) {
+  const logged = Object.keys(days).length;
+  return logged >= 14 && (!lastBackup || shiftDate(lastBackup, 30) <= today);
 }
 
 // Backups come from a file the user picks, so check the shape before replacing their diary.

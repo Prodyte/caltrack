@@ -56,7 +56,7 @@ def usda(folder, source, ids, skip=frozenset()):
         n = nutrients[fid]
         if ENERGY in n:
             out.append([name, source, round(n[ENERGY]), round(n.get(PROTEIN, 0), 1), round(n.get(CARB, 0), 1),
-                        round(n.get(FAT, 0), 1), portions[fid][:5]])
+                        round(n.get(FAT, 0), 1), sorted(portions[fid], key=lambda p: " oz" in p[0].lower())[:5]])  # metric-friendly portions first
     return out
 
 

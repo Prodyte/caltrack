@@ -1,9 +1,9 @@
 // Run: node scripts/check.mjs (from the repo root)
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { STAPLES, isoDate, shiftDate, mealForHour, prepare, search, makeEntry, nutrition, totals, recentNames, validBackup } from "../logic.js";
+import { STAPLES, copyEntries, averageKcal, suggestGoal, backupDue, isoDate, shiftDate, mealForHour, prepare, search, makeEntry, nutrition, totals, recentNames, validBackup } from "../logic.js";
 
-const foods = JSON.parse(readFileSync("foods.json", "utf8")).map(prepare);
+const foods = ["foods.json", "packaged.json"].flatMap((f) => JSON.parse(readFileSync(f, "utf8"))).map(prepare);
 const top = (q, recent) => search(foods, q, recent)[0]?.[0];
 
 // Dates stay local and survive month and year ends.
@@ -26,12 +26,18 @@ assert.match(top("milk"), /^Milk/);
 assert.match(top("curd"), /yogurt|curd/i);
 assert.match(top("chai"), /tea/i);
 assert.match(top("eggs"), /^Egg/);
-assert.ok(search(foods, "lassi").every((r) => !/classic|olive garden/i.test(r[0])), "lassi matched inside another word");
+assert.ok(search(foods, "lassi").every((r) => /\blassi/i.test(r[0])), "lassi matched inside another word");
 assert.ok(search(foods, "chicken curry").some((r) => r[0] === "Chicken curry"), "two-word search");
 assert.deepEqual(search(foods, "   "), []);
 assert.deepEqual(search(foods, "zzzqqq"), []);
 for (const [q, name] of Object.entries(STAPLES)) assert.equal(top(q), name, q);
 assert.equal(search(foods, "banana", new Set(["Banana, baked"]))[0][0], "Banana, baked", "recent food ranks above other matches");
+
+// Packaged brands are findable, and don't push generic foods off the top.
+assert.match(top("amul butter"), /amul/i);
+assert.match(top("good day"), /good day/i);
+assert.match(top("maggi"), /maggi/i);
+assert.ok(foods.filter((f) => f.row[1] === "P").length > 5000);
 
 // Calories scale by portion and quantity.
 const samosa = [["Samosa", "F", 310, 5, 30, 18, []]][0];
@@ -40,6 +46,33 @@ assert.equal(nutrition(entry).kcal, 155);
 assert.equal(totals([entry, entry]).kcal, 310);
 assert.equal(totals(undefined).kcal, 0);
 assert.equal(recentNames({ "2026-01-01": [entry], "2026-01-02": [{ ...entry, name: "Dal" }] }).keys().next().value, "Dal");
+
+// Quick adds are one-offs, so they stay out of the recent list.
+assert.equal(recentNames({ "2026-01-01": [{ ...entry, name: "Lunch out", src: "Q" }] }).size, 0);
+
+// Copying a meal keeps the food but never reuses an entry id.
+const copied = copyEntries([entry, { ...entry, meal: "Lunch" }], "Snacks");
+assert.equal(copied.length, 1);
+assert.notEqual(copied[0].id, entry.id);
+
+// The week average skips today and empty days.
+assert.deepEqual(averageKcal(["a", "b", "c", "d"], [1000, 0, 2000, 300], "d"), { kcal: 1500, days: 2 });
+assert.equal(averageKcal(["d"], [300], "d"), null);
+
+// Goal maths: 80 kg, 175 cm, 30 y man, light activity, losing weight is 1748.75 x 1.375 - 500.
+const person = { sex: "Male", age: 30, height: 175, weight: 80, activity: "Light, 1–3 workouts a week", pace: "Lose about 0.5 kg a week" };
+assert.equal(suggestGoal(person), 1900);
+assert.equal(suggestGoal({ ...person, sex: "Female", pace: "Stay the same" }), 2200);
+assert.equal(suggestGoal({ ...person, weight: 30, height: 100, age: 90, activity: "Mostly sitting" }), 1200, "floor");
+assert.equal(suggestGoal({ ...person, age: 5 }), null);
+assert.equal(suggestGoal({ ...person, weight: NaN }), null);
+
+// Backup nudge waits for real data, then repeats monthly.
+const twoWeeks = Object.fromEntries(Array.from({ length: 14 }, (_, i) => [shiftDate("2026-01-01", i), []]));
+assert.ok(!backupDue({}, null, "2026-02-01"));
+assert.ok(backupDue(twoWeeks, null, "2026-02-01"));
+assert.ok(!backupDue(twoWeeks, "2026-01-20", "2026-02-01"));
+assert.ok(backupDue(twoWeeks, "2026-01-01", "2026-02-01"));
 
 // A bad restore file must never replace the diary.
 const good = { goal: 2000, custom: [], days: { "2026-01-01": [entry] } };
