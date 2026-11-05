@@ -4,6 +4,8 @@ import { MEALS, ACTIVITY, PACE, isoDate, shiftDate, mealForHour, prepare, search
 const KEY = "haldi.v1";
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => Math.round(n).toLocaleString("en-IN");
+const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const EASE = "cubic-bezier(.16,1,.3,1)";
 const SOURCES = { F: "USDA", S: "USDA ingredient", I: "Indian recipe estimate", P: "Packaged, Open Food Facts", C: "My food", Q: "Quick add" };
 
 // Always builds text nodes, never innerHTML: names can come from a restored backup file.
@@ -43,6 +45,7 @@ function load() {
 let state = load();
 let date = isoDate();
 let foods = [];
+const foodIndex = new Map();
 let foodsLoaded = false;
 let foodsFailed = false;
 
@@ -57,25 +60,160 @@ function save() {
   }
 }
 
+// Each sheet is its own <dialog> with a history entry, so the phone's Back button and gesture close it
+// instead of leaving the app.
+const layers = [];
+let backDone = null;
+history.replaceState({ depth: 0 }, "");
+
+function openLayer(kind, build) {
+  // Taking focus itself stops the browser ringing the first button or raising a keyboard on open.
+  const inner = h("div", { class: "layerbody", tabIndex: -1, autofocus: true });
+  const dialog = h("dialog", { class: `layer ${kind}` }, inner);
+  const layer = { dialog, inner, refresh: null, opened: null };
+  dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeTop(); });
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) closeTop(); });
+  inner.append(...build(layer).filter(Boolean));
+  document.body.append(dialog);
+  layers.push(layer);
+  history.pushState({ depth: layers.length }, "");
+  $("toast").hidden = true; // moving on; it would sit over the new sheet's controls
+  document.documentElement.classList.add("locked");
+  dialog.showModal();
+  draggable(dialog);
+  placeToast();
+  layer.opened?.();
+  return layer;
+}
+
+function closeTop(count = 1) {
+  if (!layers.length) return Promise.resolve();
+  if (backDone) return backDone.promise; // a double tap must not walk out of the app
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  backDone = { promise, resolve };
+  history.go(-count);
+  return promise;
+}
+const closeAll = () => closeTop(layers.length);
+
+addEventListener("popstate", (e) => {
+  const depth = e.state?.depth ?? 0;
+  while (layers.length > depth) {
+    const { dialog } = layers.pop();
+    dialog.classList.add("closing");
+    setTimeout(() => { dialog.close(); dialog.remove(); }, 180);
+  }
+  placeToast();
+  if (!layers.length) {
+    document.documentElement.classList.remove("locked");
+    render();
+  }
+  backDone?.resolve();
+  backDone = null;
+});
+
+// Dragging a sheet's top edge down dismisses it, the way native sheets do.
+function draggable(dialog) {
+  const grip = dialog.querySelector(".grip");
+  if (!grip) return;
+  let startY = null, lastY = 0, lastT = 0, speed = 0, moved = 0;
+  grip.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    startY = lastY = e.clientY; lastT = e.timeStamp; speed = 0; moved = 0;
+    grip.setPointerCapture(e.pointerId);
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (startY === null) return;
+    moved = Math.max(0, e.clientY - startY);
+    speed = (e.clientY - lastY) / Math.max(1, e.timeStamp - lastT);
+    lastY = e.clientY; lastT = e.timeStamp;
+    dialog.style.setProperty("--drag", `${moved}px`);
+    dialog.style.transition = "none";
+    dialog.style.transform = `translateY(${moved}px)`;
+  });
+  const release = () => {
+    if (startY === null) return;
+    startY = null;
+    dialog.style.transition = "";
+    if (moved > 90 || speed > 0.5) { dialog.style.transform = ""; closeTop(); return; }
+    dialog.style.transform = "";
+    dialog.style.setProperty("--drag", "0px");
+  };
+  grip.addEventListener("pointerup", release);
+  grip.addEventListener("pointercancel", release);
+}
+
+const head = (title) => h("div", { class: "grip" }, h("div", { class: "handle" }),
+  h("div", { class: "sheethead" }, h("h2", {}, title),
+    h("button", { class: "iconbtn", "aria-label": "Close", onclick: () => closeTop() }, icon("close"))));
+
 let toastTimer;
+function placeToast() {
+  (layers.at(-1)?.dialog || document.body).append($("toast"));
+}
+
 function toast(message, undo) {
   const el = $("toast");
   $("toasttext").textContent = message;
   $("undo").onclick = () => { undo(); el.hidden = true; };
-  ($("sheet").open ? $("sheet") : document.body).append(el);
+  placeToast();
   el.hidden = false;
+  if (!calm) el.animate([{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "none" }], { duration: 220, easing: EASE });
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 6000);
+}
+
+const fresh = new Set();
+function diaryChanged() {
+  render();
+  layers.forEach((l) => l.refresh?.());
 }
 
 // Every diary change goes through here, so each one can be undone and a failed save rolls back.
 function change(message, mutate) {
   const before = JSON.stringify(state.days);
+  const known = new Set((state.days[date] || []).map((e) => e.id));
   mutate();
   if (!save()) { state.days = JSON.parse(before); return false; }
-  render();
-  toast(message, () => { state.days = JSON.parse(before); save(); render(); });
+  (state.days[date] || []).forEach((e) => { if (!known.has(e.id)) fresh.add(e.id); });
+  navigator.vibrate?.(8);
+  diaryChanged();
+  toast(message, () => { state.days = JSON.parse(before); fresh.clear(); save(); diaryChanged(); });
   return true;
+}
+
+function dayName(d) {
+  const today = isoDate();
+  return d === today ? "Today" : d === shiftDate(today, -1) ? "Yesterday"
+    : new Date(`${d}T12:00`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
+}
+
+function goTo(d) {
+  const dir = d > date ? 1 : -1;
+  date = d;
+  render();
+  if (calm) return;
+  for (const el of [$("macros"), $("meals")]) {
+    el.animate([{ opacity: 0, transform: `translateX(${dir * 24}px)` }, { opacity: 1, transform: "none" }], { duration: 240, easing: EASE });
+  }
+}
+
+// The number counts down together with the falling level, so the two read as one change.
+let shownLeft = null, tween = 0;
+function showLeft(value) {
+  const paint = (v) => { $("left").textContent = fmt(Math.abs(v)); };
+  cancelAnimationFrame(tween);
+  $("left").classList.toggle("long", fmt(Math.abs(value)).length > 5);
+  if (shownLeft === null || calm || shownLeft === value) { paint(value); shownLeft = value; return; }
+  const from = shownLeft, began = performance.now();
+  shownLeft = value;
+  const frame = (now) => {
+    const t = Math.min(1, (now - began) / 500);
+    paint(from + (value - from) * (1 - (1 - t) ** 3));
+    if (t < 1) tween = requestAnimationFrame(frame);
+  };
+  tween = requestAnimationFrame(frame);
 }
 
 function render() {
@@ -84,24 +222,29 @@ function render() {
   const t = totals(list);
   const left = state.goal - t.kcal;
   const over = Math.round(left) < 0;
+  const level = Math.max(0, Math.min(100, (left / state.goal) * 100));
 
-  $("dayname").textContent = date === today ? "Today" : date === shiftDate(today, -1) ? "Yesterday"
-    : new Date(`${date}T12:00`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
+  $("dayname").textContent = dayName(date);
   $("next").disabled = date >= today;
+  $("today").hidden = date === today;
   $("hero").classList.toggle("over", over);
-  $("level").style.height = `${Math.max(0, Math.min(100, (left / state.goal) * 100))}%`;
+  $("level").style.height = `${level}%`;
   // The status bar sits against the top of the hero in the installed app, so it follows the hero's colour.
   document.querySelector("meta[name=theme-color]").content = over ? "#A81F15" : left / state.goal >= 0.98 ? "#F2B100" : "#DDE2DF";
-  $("left").textContent = fmt(Math.abs(left));
-  $("left").classList.toggle("long", $("left").textContent.length > 5);
+  showLeft(left);
   $("leftlabel").textContent = over ? "kcal over" : "kcal left";
   $("of").textContent = `${fmt(t.kcal)} eaten of ${fmt(state.goal)}`;
   $("of").setAttribute("aria-label", `${fmt(t.kcal)} eaten of ${fmt(state.goal)}. Change daily goal`);
+  $("strip").classList.toggle("over", over);
+  $("stripbar").style.width = `${level}%`;
+  $("stripday").textContent = dayName(date);
+  $("stripleft").textContent = `${fmt(Math.abs(left))} kcal ${over ? "over" : "left"}`;
 
   $("macros").replaceChildren(...[["Protein", t.p], ["Carbs", t.c], ["Fat", t.f]].map(([label, g]) =>
     h("div", {}, h("b", {}, `${fmt(g)} g`), h("span", {}, label))));
 
-  const emptyDay = list.length ? [] : [h("p", { class: "empty-day" }, date === today ? "Nothing logged yet. Add your first food below." : "Nothing logged on this day.")];
+  const emptyDay = list.length ? [] : [h("p", { class: "empty-day" }, date === today ? "Nothing logged yet. Tap Add food to start." : "Nothing logged on this day.")];
+  const flash = !layers.length && fresh.size > 0;
   $("meals").replaceChildren(...emptyDay, ...MEALS.map((meal) => {
     const items = list.filter((e) => e.meal === meal);
     const earlier = shiftDate(date, -1);
@@ -111,20 +254,23 @@ function render() {
         h("h2", {}, meal),
         h("span", {}, items.length ? `${fmt(totals(items).kcal)} kcal` : ""),
         h("button", { "aria-label": `Add food to ${meal}`, onclick: () => openSearch(meal) }, icon("plus"))),
-      h("ul", { class: "rows" }, items.map((e) => h("li", {},
-        h("button", { class: "row", onclick: () => openPortion(rowFor(e), e.meal, e) },
+      h("ul", { class: "rows" }, items.map((e) => h("li", { class: `line${flash && fresh.has(e.id) ? " fresh" : ""}` },
+        h("button", { class: "row", onclick: () => openPortion(rowFor(e), e.meal, { entry: e }) },
           h("span", { class: "text" }, h("span", { class: "name" }, e.name), h("small", {}, amount(e))),
           h("span", { class: "kcal" }, fmt(nutrition(e).kcal)))))),
       copyable.length > 0 && h("button", { class: "copy", onclick: () => change(`Copied ${meal.toLowerCase()}`, () => { (state.days[date] ||= []).push(...copyable); }) },
         `Copy from ${date === today ? "yesterday" : "the day before"}, ${fmt(totals(copyable).kcal)} kcal`));
   }));
+  if (flash) {
+    [...document.querySelectorAll(".fresh")].at(-1)?.scrollIntoView({ block: "nearest", behavior: calm ? "auto" : "smooth" });
+    fresh.clear();
+  }
   renderWeek();
   renderNudge();
 }
 
 function renderNudge() {
-  const old = document.querySelector(".nudge");
-  old?.remove();
+  document.querySelector(".nudge")?.remove();
   if (!backupDue(state.days, state.lastBackup, isoDate())) return;
   $("week").after(h("section", { class: "nudge" }, h("p", {}, "Your diary is only on this phone. Export a backup so you can't lose it."),
     h("button", { class: "outline", onclick: openSettings }, "Open backup settings")));
@@ -151,7 +297,8 @@ function renderWeek() {
         return h("button", {
           class: `col${high ? " high" : ""}${kcals[i] ? "" : " empty"}`,
           "aria-label": `${d}: ${fmt(kcals[i])} kcal${high ? ", over goal" : ""}`,
-          onclick: () => { date = d; render(); },
+          // The chart is below the day it changes, so bring that day back into view.
+          onclick: () => { goTo(d); scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" }); },
         },
           d === date && kcals[i] ? h("em", {}, fmt(kcals[i]), high && icon("over")) : high ? h("em", {}, icon("over")) : null,
           h("i", { style: `height:${(kcals[i] / top) * 100}%` }));
@@ -162,37 +309,39 @@ function renderWeek() {
 
 // Finds the full food so its other portions are offered, falling back to what the entry stored.
 function rowFor(e) {
-  const known = [...state.custom, ...foods.map((f) => f.row)].find((r) => r[0] === e.name && r[1] === e.src);
+  const known = state.custom.find((r) => r[0] === e.name && r[1] === e.src) || foodIndex.get(`${e.src}|${e.name}`);
   return known || [e.name, e.src, e.kcal, e.p, e.c, e.f, e.label === "g" ? [] : [[e.label, e.grams]]];
 }
 
-function showSheet(...kids) {
-  $("sheetbody").replaceChildren(...kids.filter(Boolean));
-  if (!$("sheet").open) $("sheet").showModal();
+function mealPicker(current, onPick) {
+  const group = h("div", { class: "meals", role: "group", "aria-label": "Meal" });
+  const draw = () => group.replaceChildren(...MEALS.map((m) =>
+    h("button", { type: "button", "aria-pressed": String(m === current), onclick: () => { current = m; onPick(m); draw(); } }, m)));
+  draw();
+  return group;
 }
 
-const closeSheet = () => $("sheet").close();
-const head = (title, back) => h("div", { class: "sheethead" },
-  back && h("button", { class: "link", onclick: back }, "Back"),
-  h("h2", {}, title),
-  h("button", { class: "link", onclick: closeSheet }, "Close"));
-
-function openSearch(meal, query = "") {
+function openSearch(meal) {
   const allFoods = () => [...state.custom.map(prepare), ...foods];
+  const startIds = new Set((state.days[date] || []).map((e) => e.id));
   let recents = recentNames(state.days);
   const results = h("div", { class: "results" });
-  const input = h("input", { type: "search", placeholder: "Search: roti, dal, samosa, egg", value: query, enterKeyHint: "search",
-    autocomplete: "off", autocorrect: "off", "aria-label": "Search foods", oninput: draw });
-  const mealButtons = h("div", { class: "meals", role: "group", "aria-label": "Meal" });
-  const drawMeals = () => mealButtons.replaceChildren(...MEALS.map((m) =>
-    h("button", { "aria-pressed": String(m === meal), onclick: () => { meal = m; drawMeals(); } }, m)));
+  const input = h("input", { type: "search", placeholder: "Search: roti, dal, amul butter", enterKeyHint: "search",
+    autocomplete: "off", autocorrect: "off", "aria-label": "Search foods",
+    oninput: () => { draw(); results.scrollTop = 0; },
+    onkeydown: (e) => { if (e.key === "Enter") input.blur(); } });
+  // Scrolling means the person is reading the list, so give it the room the keyboard was taking.
+  results.addEventListener("touchmove", () => input.blur(), { passive: true });
+  const bar = h("div", { class: "mealbar", hidden: true });
+
+  const cleared = () => { input.value = ""; draw(); results.scrollTop = 0; };
 
   function foodRow(row) {
     const known = recents.get(row[0]);
     const last = known?.src === row[1] ? known : null;
     const [label, grams] = last ? [amount(last), last.grams * last.qty] : row[6][0] || ["100 g", 100];
-    return h("div", { class: "foodline" },
-      h("button", { class: "row", onclick: () => openPortion(row, meal, null, input.value, last) },
+    return h("div", { class: "foodline line" },
+      h("button", { class: "row", onclick: () => openPortion(row, meal, { last, onAdded: cleared }) },
         h("span", { class: "text" }, h("span", { class: "name" }, row[0]), h("small", {}, `${label}, ${SOURCES[row[1]]}`)),
         h("span", { class: "kcal" }, fmt((row[2] * grams) / 100))),
       last && h("button", { class: "repeat", "aria-label": `Add ${amount(last)} of ${row[0]} to ${meal}`, onclick: () => {
@@ -200,32 +349,44 @@ function openSearch(meal, query = "") {
       } }, icon("plus")));
   }
 
+  const actionRow = (title, detail, onclick) => h("div", { class: "line" }, h("button", { class: "row", onclick },
+    h("span", { class: "text" }, h("span", { class: "name" }, title), h("small", {}, detail))));
+
   function draw() {
     const q = input.value.trim();
     recents = recentNames(state.days);
-    const own = h("button", { class: "row", onclick: () => openCustom(meal, q) },
-      h("span", { class: "text" }, h("span", { class: "name" }, q ? `Add “${q}” as my own food` : "Add my own food"),
-        h("small", {}, "Use the numbers on the pack label")));
+    const quick = actionRow("Quick add calories", "When you only know roughly how much", () => openQuick(meal, cleared));
+    const own = actionRow(q ? `Add “${q}” as my own food` : "Add my own food", "Use the numbers on the pack label", () => openCustom(meal, q, cleared));
     const offline = foodsFailed ? h("p", { class: "error" }, "The food list has not downloaded. Connect to the internet and reopen CalTrack.") : null;
     if (!q) {
       const rows = [...recents.values()].map(rowFor);
-      results.replaceChildren(...[offline, rows.length ? h("h3", {}, "Recent") : h("p", { class: "hint" }, "Search for your first food."), ...rows.map(foodRow), own].filter(Boolean));
+      results.replaceChildren(...[offline, quick, rows.length ? h("h3", {}, "Recent") : h("p", { class: "hint" }, "Search above for your first food."), ...rows.map(foodRow), own].filter(Boolean));
       return;
     }
     const rows = search(allFoods(), q, new Set(recents.keys()));
     const loading = !foodsLoaded && !foodsFailed ? h("p", { class: "hint", role: "status" }, "Loading the food list…") : null;
     const none = !rows.length && foodsLoaded ? h("p", { class: "hint" }, `No food matches “${q}”. Check the spelling or add it yourself.`) : null;
-    results.replaceChildren(...[offline, loading, ...rows.map(foodRow), none, own].filter(Boolean));
+    results.replaceChildren(...[offline, loading, ...rows.map(foodRow), none, quick, own].filter(Boolean));
   }
 
-  drawMeals();
+  function drawBar() {
+    const added = (state.days[date] || []).filter((e) => !startIds.has(e.id));
+    bar.hidden = !added.length;
+    bar.replaceChildren(h("span", {}, `${added.length} added, ${fmt(totals(added).kcal)} kcal`),
+      h("button", { class: "done", onclick: () => closeTop() }, "Done"));
+  }
+
   draw();
-  showSheet(head("Add food"), input, mealButtons,
-    h("div", { class: "tools" }, h("button", { class: "link", onclick: () => openQuick(meal, input.value) }, "Quick add calories")), results);
-  input.focus();
+  openLayer("full", (layer) => {
+    layer.refresh = () => { draw(); drawBar(); };
+    // The keyboard would cover the recent foods most people came to tap, so only raise it when there are none.
+    layer.opened = () => { if (!recents.size) input.focus(); };
+    return [head(date === isoDate() ? "Add food" : `Add food, ${dayName(date)}`),
+      mealPicker(meal, (m) => { meal = m; draw(); }), input, results, bar];
+  });
 }
 
-function openPortion(row, meal, entry = null, query = "", last = null) {
+function openPortion(row, meal, { entry = null, last = null, onAdded = null } = {}) {
   const [name, src, kcal] = row;
   const custom = src === "C" || src === "Q";
   const from = entry || last;
@@ -235,9 +396,11 @@ function openPortion(row, meal, entry = null, query = "", last = null) {
   if (from && !portions.includes(chosen)) portions.unshift(chosen);
   const qtyFor = (portion) => (portion[0] === "g" ? 100 : 1);
 
-  const qty = h("input", { type: "number", inputMode: "decimal", min: "0", step: "any", value: from ? from.qty : qtyFor(chosen), "aria-label": "Amount", oninput: draw });
+  const qty = h("input", { type: "number", inputMode: "decimal", min: "0", step: "any", enterKeyHint: "done", value: from ? from.qty : qtyFor(chosen), "aria-label": "Amount", oninput: draw,
+    onkeydown: (e) => { if (e.key === "Enter") qty.blur(); } });
   const result = h("div", { class: "result", "aria-live": "polite" });
   const chips = h("div", { class: "portions", role: "group", "aria-label": "Portion" });
+  const presets = h("div", { class: "presets", role: "group", "aria-label": "Common amounts" });
   const action = h("button", { class: "primary", onclick: submit });
   const amountNow = () => { const v = parseFloat(qty.value); return v > 0 && Number.isFinite(v) ? v : 0; };
 
@@ -251,6 +414,8 @@ function openPortion(row, meal, entry = null, query = "", last = null) {
   function draw() {
     const n = nutrition(makeEntry(row, meal, chosen[0], chosen[1], amountNow(), "preview"));
     result.replaceChildren(h("b", {}, `${fmt(n.kcal)} kcal`), h("p", {}, `Protein ${fmt(n.p)} g, carbs ${fmt(n.c)} g, fat ${fmt(n.f)} g`));
+    const values = chosen[0] === "g" ? [[50, "50 g"], [100, "100 g"], [150, "150 g"], [200, "200 g"], [250, "250 g"]] : [[0.5, "½"], [1, "1"], [1.5, "1½"], [2, "2"], [3, "3"]];
+    presets.replaceChildren(...values.map(([value, label]) => h("button", { "aria-pressed": String(amountNow() === value), onclick: () => { qty.value = value; draw(); } }, label)));
     action.disabled = !amountNow();
     action.textContent = entry ? "Save changes" : `Add to ${meal}`;
   }
@@ -268,7 +433,7 @@ function openPortion(row, meal, entry = null, query = "", last = null) {
       if (entry) list[list.findIndex((e) => e.id === entry.id)] = made;
       else list.push(made);
     });
-    if (done) closeSheet();
+    if (done) { closeTop(); onAdded?.(); }
   }
 
   function removeEntry() {
@@ -276,29 +441,33 @@ function openPortion(row, meal, entry = null, query = "", last = null) {
       state.days[date] = state.days[date].filter((e) => e.id !== entry.id);
       if (!state.days[date].length) delete state.days[date];
     });
-    if (done) closeSheet();
+    if (done) closeTop();
   }
 
   function forgetFood() {
     state.custom = state.custom.filter((r) => r[0] !== name);
     save();
-    openSearch(meal);
+    closeTop();
+    layers.forEach((l) => l.refresh?.());
   }
 
   drawChips();
   draw();
-  showSheet(
-    head(name, entry ? null : () => openSearch(meal, query)),
-    h("p", { class: "note" }, `${SOURCES[src] || "USDA"}${custom ? "" : `, ${fmt(kcal)} kcal per 100 g`}.${src === "I" ? " Worked out from a recipe, so treat it as a guide." : ""}${src === "P" ? " Added by volunteers, so check it against the pack." : ""}`),
+  openLayer("bottom", () => [
+    head(name),
+    !custom && h("p", { class: "note" }, `${SOURCES[src] || "USDA"}, ${fmt(kcal)} kcal per 100 g.${src === "I" ? " Worked out from a recipe, so treat it as a guide." : ""}${src === "P" ? " Added by volunteers, so check it against the pack." : ""}`),
+    entry && mealPicker(meal, (m) => { meal = m; draw(); }),
     chips,
     h("div", { class: "stepper" },
       h("button", { "aria-label": "Less", onclick: () => step(-1) }, icon("minus")),
       qty,
       h("button", { "aria-label": "More", onclick: () => step(1) }, icon("plus"))),
+    presets,
     result,
     action,
     entry && h("button", { class: "danger", onclick: removeEntry }, "Delete from diary"),
-    src === "C" && !entry && h("button", { class: "danger", onclick: forgetFood }, "Remove from my foods"));
+    src === "C" && !entry && h("button", { class: "danger", onclick: forgetFood }, "Remove from my foods"),
+  ]);
 }
 
 const field = (label, props) => { const input = h("input", props); return [h("label", {}, label, input), input]; };
@@ -309,31 +478,36 @@ function choice(label, options, value) {
   return [h("label", {}, label, select), select];
 }
 
-function openQuick(meal, query = "") {
-  const [kcalL, kcalI] = field("Calories", { type: "number", inputMode: "decimal", min: "0" });
-  const [nameL, nameI] = field("What was it? Optional", { autocomplete: "off" });
+// A real form, so the keyboard's Go/Done key submits it.
+const form = (onSubmit, ...kids) => h("form", { class: "stack", noValidate: true, onsubmit: (e) => { e.preventDefault(); onSubmit(); } }, ...kids);
+
+function openQuick(meal, onAdded) {
+  const [kcalL, kcalI] = field("Calories", { type: "number", inputMode: "decimal", min: "0", enterKeyHint: "done" });
+  const [nameL, nameI] = field("What was it? Optional", { autocomplete: "off", enterKeyHint: "done" });
   const error = h("p", { class: "error", role: "alert" });
   function add() {
     const kcal = parseFloat(kcalI.value);
     if (!(kcal > 0 && kcal <= 20000)) { error.textContent = "Enter the calories, from 1 to 20,000."; kcalI.focus(); return; }
     const row = [nameI.value.trim() || "Quick add", "Q", kcal, 0, 0, 0, []];
-    if (change(`Added ${row[0]} to ${meal}`, () => { (state.days[date] ||= []).push(makeEntry(row, meal, "estimate", 100, 1)); })) closeSheet();
+    if (change(`Added ${row[0]} to ${meal}`, () => { (state.days[date] ||= []).push(makeEntry(row, meal, "estimate", 100, 1)); })) { closeTop(); onAdded?.(); }
   }
-  showSheet(head("Quick add calories", () => openSearch(meal, query)),
-    h("div", { class: "stack" }, kcalL, nameL, error, h("button", { class: "primary", onclick: add }, `Add to ${meal}`)));
-  kcalI.focus();
+  openLayer("bottom", (layer) => {
+    layer.opened = () => kcalI.focus();
+    return [head("Quick add calories"), form(add, kcalL, nameL, error, h("button", { class: "primary" }, `Add to ${meal}`))];
+  });
 }
 
 function openGoal(firstRun = false) {
   const saved = state.profile || {};
+  const number = (label, value, mode) => field(label, { type: "number", inputMode: mode, enterKeyHint: "next", value: value ?? "", oninput: draw });
   const [sexL, sexI] = choice("Sex", ["Male", "Female"], saved.sex);
-  const [ageL, ageI] = field("Age", { type: "number", inputMode: "numeric", value: saved.age ?? "", oninput: draw });
-  const [heightL, heightI] = field("Height, cm", { type: "number", inputMode: "numeric", value: saved.height ?? "", oninput: draw });
-  const [weightL, weightI] = field("Weight, kg", { type: "number", inputMode: "decimal", value: saved.weight ?? "", oninput: draw });
+  const [ageL, ageI] = number("Age", saved.age, "numeric");
+  const [heightL, heightI] = number("Height, cm", saved.height, "numeric");
+  const [weightL, weightI] = number("Weight, kg", saved.weight, "decimal");
   const [activityL, activityI] = choice("Activity", Object.keys(ACTIVITY), saved.activity ?? "Light, 1–3 workouts a week");
   const [paceL, paceI] = choice("Goal", Object.keys(PACE), saved.pace ?? "Stay the same");
   const result = h("div", { class: "suggest", "aria-live": "polite" });
-  const use = h("button", { class: "primary", onclick: apply });
+  const use = h("button", { class: "primary" });
   sexI.onchange = activityI.onchange = paceI.onchange = draw;
   const profile = () => ({ sex: sexI.value, age: +ageI.value, height: +heightI.value, weight: +weightI.value, activity: activityI.value, pace: paceI.value });
 
@@ -347,26 +521,28 @@ function openGoal(firstRun = false) {
   }
 
   function apply() {
-    state.goal = suggestGoal(profile());
+    const goal = suggestGoal(profile());
+    if (!goal) { ageI.focus(); return; }
+    state.goal = goal;
     state.profile = profile();
-    if (save()) { render(); closeSheet(); }
+    if (save()) { closeAll(); render(); }
   }
 
   draw();
-  showSheet(head(firstRun ? "Set your daily goal" : "Work out my goal", firstRun ? null : openSettings),
-    h("div", { class: "stack" }, sexL, h("div", { class: "grid3" }, ageL, heightL, weightL), activityL, paceL, result, use,
-      firstRun && h("button", { class: "link skip", onclick: closeSheet }, `Keep ${fmt(state.goal)} kcal for now`)));
+  openLayer("full", () => [head(firstRun ? "Set your daily goal" : "Work out my goal"),
+    form(apply, sexL, h("div", { class: "grid3" }, ageL, heightL, weightL), activityL, paceL, result, use,
+      firstRun && h("button", { type: "button", class: "link skip", onclick: () => closeTop() }, `Keep ${fmt(state.goal)} kcal for now`))]);
 }
 
-function openCustom(meal, name = "") {
-  const [nameL, nameI] = field("Name", { value: name, autocomplete: "off" });
-  const [kcalL, kcalI] = field("Calories per serving", { type: "number", inputMode: "decimal", min: "0" });
-  const [pL, pI] = field("Protein, g", { type: "number", inputMode: "decimal", min: "0" });
-  const [cL, cI] = field("Carbs, g", { type: "number", inputMode: "decimal", min: "0" });
-  const [fL, fI] = field("Fat, g", { type: "number", inputMode: "decimal", min: "0" });
+function openCustom(meal, name, onAdded) {
+  const [nameL, nameI] = field("Name", { value: name, autocomplete: "off", enterKeyHint: "next" });
+  const [kcalL, kcalI] = field("Calories per serving", { type: "number", inputMode: "decimal", min: "0", enterKeyHint: "next" });
+  const [pL, pI] = field("Protein, g", { type: "number", inputMode: "decimal", min: "0", enterKeyHint: "next" });
+  const [cL, cI] = field("Carbs, g", { type: "number", inputMode: "decimal", min: "0", enterKeyHint: "next" });
+  const [fL, fI] = field("Fat, g", { type: "number", inputMode: "decimal", min: "0", enterKeyHint: "done" });
   const error = h("p", { class: "error", role: "alert" });
 
-  function create() {
+  async function create() {
     const num = (input) => Math.max(0, parseFloat(input.value) || 0);
     if (!nameI.value.trim()) { error.textContent = "Enter a name."; nameI.focus(); return; }
     if (!(parseFloat(kcalI.value) >= 0)) { error.textContent = "Enter the calories per serving."; kcalI.focus(); return; }
@@ -374,12 +550,15 @@ function openCustom(meal, name = "") {
     // One serving counts as 100 "grams" so custom foods use the same per-100 g maths as everything else.
     const row = [title, "C", num(kcalI), num(pI), num(cI), num(fI), [["1 serving", 100]]];
     state.custom = [row, ...state.custom.filter((r) => r[0] !== title)];
-    if (save()) openPortion(row, meal, null, title);
+    if (!save()) return;
+    await closeTop();
+    openPortion(row, meal, { onAdded });
   }
 
-  showSheet(head("Add my own food", () => openSearch(meal, name)),
-    h("div", { class: "stack" }, nameL, kcalL, h("div", { class: "grid3" }, pL, cL, fL), error,
-      h("button", { class: "primary", onclick: create }, "Save food")));
+  openLayer("full", (layer) => {
+    layer.opened = () => (name ? kcalI : nameI).focus();
+    return [head("Add my own food"), form(create, nameL, kcalL, h("div", { class: "grid3" }, pL, cL, fL), error, h("button", { class: "primary" }, "Save food"))];
+  });
 }
 
 async function exportBackup() {
@@ -397,7 +576,7 @@ async function exportBackup() {
 }
 
 function openSettings() {
-  const goal = h("input", { type: "number", inputMode: "numeric", min: "500", max: "10000", value: state.goal });
+  const goal = h("input", { type: "number", inputMode: "numeric", min: "500", max: "10000", enterKeyHint: "done", value: state.goal });
   const status = h("p", { class: "error", role: "status" });
   const picker = h("input", { type: "file", accept: "application/json,.json", hidden: true, onchange: restore });
 
@@ -412,7 +591,7 @@ function openSettings() {
       state = { ...data, onboarded: true };
       save();
       render();
-      closeSheet();
+      closeAll();
     } catch {
       status.textContent = "That file is not a CalTrack backup. Nothing was changed.";
     } finally {
@@ -424,28 +603,61 @@ function openSettings() {
     const value = Math.round(parseFloat(goal.value));
     if (!(value >= 500 && value <= 10000)) { status.textContent = "Enter a goal from 500 to 10,000 kcal."; goal.focus(); return; }
     state.goal = value;
-    if (save()) { render(); closeSheet(); }
+    if (save()) { render(); closeTop(); }
   }
 
-  showSheet(head("Settings"),
+  openLayer("full", () => [head("Settings"),
     h("div", { class: "stack" },
-      h("section", {}, h("label", {}, "Daily goal, kcal", goal), status, h("button", { class: "outline", onclick: saveGoal }, "Save goal"), h("button", { class: "outline", onclick: () => openGoal() }, "Work out my goal")),
+      h("section", {}, form(saveGoal, h("label", {}, "Daily goal, kcal", goal), status, h("div", {}, h("button", { class: "outline" }, "Save goal"), h("button", { type: "button", class: "outline", onclick: () => openGoal() }, "Work out my goal")))),
       h("section", {}, h("h3", {}, "Backup"),
         h("p", { class: "note" }, `Your diary is stored only on this phone. Export a backup before you change phones or clear browser data. ${state.lastBackup ? `Last backup: ${state.lastBackup}.` : "You haven't made a backup yet."}`),
         h("button", { class: "outline", onclick: exportBackup }, "Export backup"),
         h("button", { class: "outline", onclick: () => picker.click() }, "Restore backup"), picker),
       h("section", {}, h("h3", {}, "Where the numbers come from"),
-        h("p", { class: "note" }, `${foods.length ? `${fmt(foods.length)} foods` : "Foods"} from USDA FoodData Central (FNDDS 2021–2023 and SR Legacy) and the Indian Nutrient Databank (Vijayakumar et al., 2024), plus packaged products from Open Food Facts (ODbL). Indian recipe figures are estimates and packaged figures are added by volunteers. Rows that failed sanity checks were removed.`))));
+        h("p", { class: "note" }, `${foods.length ? `${fmt(foods.length)} foods` : "Foods"} from USDA FoodData Central (FNDDS 2021–2023 and SR Legacy) and the Indian Nutrient Databank (Vijayakumar et al., 2024), plus packaged products from Open Food Facts (ODbL). Indian recipe figures are estimates and packaged figures are added by volunteers. Rows that failed sanity checks were removed.`)))]);
 }
 
 const redrawSearch = () => document.querySelector("dialog[open] input[type=search]")?.dispatchEvent(new Event("input"));
-$("sheet").addEventListener("close", () => document.body.append($("toast")));
 
-$("prev").onclick = () => { date = shiftDate(date, -1); render(); };
-$("next").onclick = () => { date = shiftDate(date, 1); render(); };
+$("prev").onclick = () => goTo(shiftDate(date, -1));
+$("next").onclick = () => goTo(shiftDate(date, 1));
+$("today").onclick = () => goTo(isoDate());
 $("add").onclick = () => openSearch(mealForHour(new Date().getHours()));
 $("settings-open").onclick = openSettings;
 $("of").onclick = openSettings;
+$("strip").onclick = () => scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" });
+
+// A slim bar keeps the number in view once the big one has scrolled away.
+new IntersectionObserver(([e]) => {
+  document.body.classList.toggle("scrolled", !e.isIntersecting);
+  $("strip").inert = e.isIntersecting;
+}, { rootMargin: "-60px 0px 0px 0px" }).observe($("hero"));
+
+// Swipe sideways between days. Edge starts are left alone: iOS uses them for its own gestures.
+let swipe = null;
+document.addEventListener("touchstart", (e) => {
+  const t = e.touches[0];
+  swipe = !layers.length && e.touches.length === 1 && t.clientX > 24 && t.clientX < innerWidth - 24 ? { x: t.clientX, y: t.clientY, at: e.timeStamp } : null;
+}, { passive: true });
+document.addEventListener("touchend", (e) => {
+  if (!swipe) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+  const quick = e.timeStamp - swipe.at < 500;
+  swipe = null;
+  if (!quick || Math.abs(dx) < 70 || Math.abs(dy) > 40) return;
+  if (dx > 0) goTo(shiftDate(date, -1));
+  else if (date < isoDate()) goTo(shiftDate(date, 1));
+}, { passive: true });
+
+// iOS draws the keyboard over the page without resizing it, so sheets sit on top of it themselves.
+const vv = window.visualViewport;
+const syncKeyboard = () => {
+  if (vv.scale > 1.01) return;
+  document.documentElement.style.setProperty("--kb", `${Math.max(0, innerHeight - vv.height - vv.offsetTop)}px`);
+};
+vv?.addEventListener("resize", syncKeyboard);
+vv?.addEventListener("scroll", syncKeyboard);
 
 // An installed app can stay open overnight; move on to the new day if it was showing today.
 let lastSeen = isoDate();
@@ -460,16 +672,21 @@ render();
 navigator.storage?.persist?.();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
 
+function addFoods(rows) {
+  foods = foods.concat(rows.map(prepare)); // concat: packaged.json may land before foods.json
+  for (const row of rows) foodIndex.set(`${row[1]}|${row[0]}`, row);
+}
+
 fetch("foods.json")
   .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
-  .then((rows) => { foods = foods.concat(rows.map(prepare)); foodsLoaded = true; }) // packaged.json may have landed first
+  .then((rows) => { addFoods(rows); foodsLoaded = true; })
   .catch(() => { foodsFailed = true; })
   .finally(redrawSearch);
 
 // Packaged foods are a bonus: if this file fails, everything else still works.
 fetch("packaged.json")
   .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
-  .then((rows) => { foods = foods.concat(rows.map(prepare)); redrawSearch(); })
+  .then((rows) => { addFoods(rows); redrawSearch(); })
   .catch(() => {});
 
 if (!state.onboarded) {
