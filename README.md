@@ -1,8 +1,8 @@
-# Haldi
+# Thali
 
 A calorie tracker for one person's phone. It works offline, installs to the home screen and has no accounts or server. The diary stays in the browser's storage on the device; export a backup from Settings.
 
-Open https://prodyte.github.io/haldi/ and add it to the home screen. On iPhone use Safari, Share, Add to Home Screen. On Android use Chrome, menu, Install app.
+Open https://prodyte.github.io/thali/ and add it to the home screen. On iPhone use Safari, Share, Add to Home Screen. On Android use Chrome, menu, Install app.
 
 ## Food data
 

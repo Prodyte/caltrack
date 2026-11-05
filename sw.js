@@ -1,5 +1,5 @@
 // Serves from cache at once and refreshes in the background, so the app opens offline and updates itself.
-const CACHE = "haldi-1";
+const CACHE = "thali-1";
 const FILES = ["./", "index.html", "app.js", "logic.js", "foods.json", "gabarito.woff2", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
