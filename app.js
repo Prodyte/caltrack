@@ -235,61 +235,62 @@ function render() {
   $("leftlabel").textContent = over ? "kcal over" : "kcal left";
   $("of").textContent = `${fmt(t.kcal)} eaten of ${fmt(state.goal)}`;
   $("of").setAttribute("aria-label", `${fmt(t.kcal)} eaten of ${fmt(state.goal)}. Change daily goal`);
-  $("strip").classList.toggle("over", over);
-  $("stripbar").style.width = `${level}%`;
-  $("stripday").textContent = dayName(date);
-  $("stripleft").textContent = `${fmt(Math.abs(left))} kcal ${over ? "over" : "left"}`;
 
   $("macros").replaceChildren(...[["Protein", t.p], ["Carbs", t.c], ["Fat", t.f]].map(([label, g]) =>
     h("div", {}, h("b", {}, `${fmt(g)} g`), h("span", {}, label))));
 
-  const emptyDay = list.length ? [] : [h("p", { class: "empty-day" }, date === today ? "Nothing logged yet. Tap Add food to start." : "Nothing logged on this day.")];
   const flash = !layers.length && fresh.size > 0;
-  $("meals").replaceChildren(...emptyDay, ...MEALS.map((meal) => {
+  $("meals").replaceChildren(...MEALS.map((meal) => {
     const items = list.filter((e) => e.meal === meal);
-    const earlier = shiftDate(date, -1);
-    const copyable = items.length ? [] : copyEntries(state.days[earlier] || [], meal);
-    return h("section", { class: "meal" },
-      h("div", { class: "mealhead" },
-        h("h2", {}, meal),
-        h("span", {}, items.length ? `${fmt(totals(items).kcal)} kcal` : ""),
-        h("button", { "aria-label": `Add food to ${meal}`, onclick: () => openSearch(meal) }, icon("plus"))),
-      h("ul", { class: "rows" }, items.map((e) => h("li", { class: `line${flash && fresh.has(e.id) ? " fresh" : ""}` },
-        h("button", { class: "row", onclick: () => openPortion(rowFor(e), e.meal, { entry: e }) },
-          h("span", { class: "text" }, h("span", { class: "name" }, e.name), h("small", {}, amount(e))),
-          h("span", { class: "kcal" }, fmt(nutrition(e).kcal)))))),
-      copyable.length > 0 && h("button", { class: "copy", onclick: () => change(`Copied ${meal.toLowerCase()}`, () => { (state.days[date] ||= []).push(...copyable); }) },
-        `Copy from ${date === today ? "yesterday" : "the day before"}, ${fmt(totals(copyable).kcal)} kcal`));
+    const copyable = items.length ? [] : copyFor(meal);
+    const summary = items.length ? [...new Set(items.map((e) => e.name))].join(", ")
+      : copyable.length ? `${date === today ? "Yesterday" : "Day before"}: ${fmt(totals(copyable).kcal)} kcal` : "Nothing yet";
+    return h("section", { class: `meal${flash && items.some((e) => fresh.has(e.id)) ? " fresh" : ""}` },
+      h("button", { class: "mealrow", onclick: () => (items.length || copyable.length ? openMeal(meal) : openSearch(meal)) },
+        h("span", { class: "text" }, h("span", { class: "mealname" }, meal), h("small", {}, summary)),
+        items.length > 0 && h("span", { class: "kcal" }, fmt(totals(items).kcal))),
+      h("button", { class: "mealadd", "aria-label": `Add food to ${meal}`, onclick: () => openSearch(meal) }, icon("plus")));
   }));
-  if (flash) {
-    [...document.querySelectorAll(".fresh")].at(-1)?.scrollIntoView({ block: "nearest", behavior: calm ? "auto" : "smooth" });
-    fresh.clear();
-  }
-  renderWeek();
-  renderNudge();
+  if (flash) fresh.clear();
+  const due = backupDue(state.days, state.lastBackup, today);
+  $("settings-open").classList.toggle("due", due);
+  $("settings-open").setAttribute("aria-label", due ? "Settings, backup due" : "Settings");
+  renderWeekStrip();
 }
 
-function renderNudge() {
-  document.querySelector(".nudge")?.remove();
-  if (!backupDue(state.days, state.lastBackup, isoDate())) return;
-  $("week").after(h("section", { class: "nudge" }, h("p", {}, "Your diary is only on this phone. Export a backup so you can't lose it."),
-    h("button", { class: "outline", onclick: openSettings }, "Open backup settings")));
-}
+const copyFor = (meal) => copyEntries(state.days[shiftDate(date, -1)] || [], meal);
 
 const amount = (e) => (e.label === "g" ? `${fmt(e.qty)} g`
   : e.qty === 1 ? e.label : `${+e.qty.toFixed(2)} × ${e.label.replace(/^1 /, "")}`);
 
-function renderWeek() {
-  // Tapping a day inside the window selects it without moving the bars under your finger.
+// Tapping a day inside the window selects it without moving the bars under your finger.
+function weekWindow() {
   const today = isoDate();
   const end = date >= shiftDate(today, -6) ? today : date;
   const dates = Array.from({ length: 7 }, (_, i) => shiftDate(end, i - 6));
   const kcals = dates.map((d) => totals(state.days[d]).kcal);
-  const top = Math.max(state.goal, ...kcals) * 1.15;
+  return { today, end, dates, kcals, top: Math.max(state.goal, ...kcals) * 1.15 };
+}
+
+const dayLabel = (d) => new Date(`${d}T12:00`).toLocaleDateString("en-IN", { weekday: "short" }).slice(0, 2);
+
+function renderWeekStrip() {
+  const { dates, kcals, top } = weekWindow();
+  $("week").replaceChildren(...dates.map((d, i) => {
+    const high = Math.round(kcals[i]) > state.goal;
+    return h("button", { class: `wk${d === date ? " now" : ""}${high ? " high" : ""}${kcals[i] ? "" : " empty"}`,
+      "aria-label": `${d}: ${fmt(kcals[i])} kcal${high ? ", over goal" : ""}`, onclick: () => goTo(d) },
+      h("span", { class: "track" }, h("u", { style: `bottom:${(state.goal / top) * 100}%` }), h("i", { style: `height:${(kcals[i] / top) * 100}%` })),
+      h("span", {}, dayLabel(d)));
+  }));
+}
+
+function openWeek() {
+  const { today, end, dates, kcals, top } = weekWindow();
   const average = averageKcal(dates, kcals, today);
-  const dayLabel = (d) => new Date(`${d}T12:00`).toLocaleDateString("en-IN", { weekday: "short" }).slice(0, 2);
-  $("week").replaceChildren(
-    h("div", { class: "weekhead" }, h("h2", {}, end === today ? "Last 7 days" : `7 days to ${new Date(`${end}T12:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`), h("span", {}, `Line marks your ${fmt(state.goal)} goal`)),
+  const title = end === today ? "Last 7 days" : `7 days to ${new Date(`${end}T12:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`;
+  openLayer("bottom", () => [head(title),
+    h("p", { class: "note" }, `The line marks your ${fmt(state.goal)} kcal goal. Tap a day to open it.`),
     h("div", { class: "bars" },
       h("div", { class: "goal-line", style: `bottom:${(state.goal / top) * 100}%` }),
       dates.map((d, i) => {
@@ -297,14 +298,35 @@ function renderWeek() {
         return h("button", {
           class: `col${high ? " high" : ""}${kcals[i] ? "" : " empty"}`,
           "aria-label": `${d}: ${fmt(kcals[i])} kcal${high ? ", over goal" : ""}`,
-          // The chart is below the day it changes, so bring that day back into view.
-          onclick: () => { goTo(d); scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" }); },
+          onclick: () => { goTo(d); closeTop(); },
         },
           d === date && kcals[i] ? h("em", {}, fmt(kcals[i]), high && icon("over")) : high ? h("em", {}, icon("over")) : null,
           h("i", { style: `height:${(kcals[i] / top) * 100}%` }));
       })),
     h("div", { class: "days" }, dates.map((d) => h("span", { class: d === date ? "now" : "" }, dayLabel(d)))),
-    ...average ? [h("p", { class: "weeknote" }, `Average ${fmt(average.kcal)} kcal over ${average.days} logged ${average.days === 1 ? "day" : "days"}, not counting today`)] : []);
+    average && h("p", { class: "weeknote" }, `Average ${fmt(average.kcal)} kcal over ${average.days} logged ${average.days === 1 ? "day" : "days"}, not counting today`)]);
+}
+
+function openMeal(meal) {
+  const total = h("p", { class: "note" });
+  const list = h("ul", { class: "rows mealitems" });
+  const copy = h("div", {});
+  function draw() {
+    const items = (state.days[date] || []).filter((e) => e.meal === meal);
+    const copyable = items.length ? [] : copyFor(meal);
+    total.textContent = items.length ? `${dayName(date)}, ${fmt(totals(items).kcal)} kcal` : `${dayName(date)}, nothing logged yet`;
+    list.replaceChildren(...items.map((e) => h("li", { class: "line" },
+      h("button", { class: "row", onclick: () => openPortion(rowFor(e), e.meal, { entry: e }) },
+        h("span", { class: "text" }, h("span", { class: "name" }, e.name), h("small", {}, amount(e))),
+        h("span", { class: "kcal" }, fmt(nutrition(e).kcal))))));
+    copy.replaceChildren(...copyable.length ? [h("button", { class: "copy", onclick: () => change(`Copied ${meal.toLowerCase()}`, () => { (state.days[date] ||= []).push(...copyable); }) },
+      `Copy from ${date === isoDate() ? "yesterday" : "the day before"}, ${fmt(totals(copyable).kcal)} kcal`)] : []);
+  }
+  draw();
+  openLayer("bottom", (layer) => {
+    layer.refresh = draw;
+    return [head(meal), total, list, copy, h("button", { class: "primary", onclick: () => openSearch(meal) }, `Add food to ${meal}`)];
+  });
 }
 
 // Finds the full food so its other portions are offered, falling back to what the entry stored.
@@ -349,24 +371,22 @@ function openSearch(meal) {
       } }, icon("plus")));
   }
 
-  const actionRow = (title, detail, onclick) => h("div", { class: "line" }, h("button", { class: "row", onclick },
-    h("span", { class: "text" }, h("span", { class: "name" }, title), h("small", {}, detail))));
+  // Recent foods are capped to what fits, so opening Add never needs a scroll.
+  const recentsThatFit = () => Math.max(3, Math.floor((innerHeight - (bar.hidden ? 300 : 370)) / 66));
 
   function draw() {
     const q = input.value.trim();
     recents = recentNames(state.days);
-    const quick = actionRow("Quick add calories", "When you only know roughly how much", () => openQuick(meal, cleared));
-    const own = actionRow(q ? `Add “${q}” as my own food` : "Add my own food", "Use the numbers on the pack label", () => openCustom(meal, q, cleared));
     const offline = foodsFailed ? h("p", { class: "error" }, "The food list has not downloaded. Connect to the internet and reopen CalTrack.") : null;
     if (!q) {
-      const rows = [...recents.values()].map(rowFor);
-      results.replaceChildren(...[offline, quick, rows.length ? h("h3", {}, "Recent") : h("p", { class: "hint" }, "Search above for your first food."), ...rows.map(foodRow), own].filter(Boolean));
+      const rows = [...recents.values()].slice(0, recentsThatFit()).map(rowFor);
+      results.replaceChildren(...[offline, rows.length ? h("h3", {}, "Recent") : h("p", { class: "hint" }, "Search above for your first food."), ...rows.map(foodRow)].filter(Boolean));
       return;
     }
     const rows = search(allFoods(), q, new Set(recents.keys()));
     const loading = !foodsLoaded && !foodsFailed ? h("p", { class: "hint", role: "status" }, "Loading the food list…") : null;
     const none = !rows.length && foodsLoaded ? h("p", { class: "hint" }, `No food matches “${q}”. Check the spelling or add it yourself.`) : null;
-    results.replaceChildren(...[offline, loading, ...rows.map(foodRow), none, quick, own].filter(Boolean));
+    results.replaceChildren(...[offline, loading, ...rows.map(foodRow), none].filter(Boolean));
   }
 
   function drawBar() {
@@ -382,7 +402,11 @@ function openSearch(meal) {
     // The keyboard would cover the recent foods most people came to tap, so only raise it when there are none.
     layer.opened = () => { if (!recents.size) input.focus(); };
     return [head(date === isoDate() ? "Add food" : `Add food, ${dayName(date)}`),
-      mealPicker(meal, (m) => { meal = m; draw(); }), input, results, bar];
+      mealPicker(meal, (m) => { meal = m; draw(); }), input,
+      h("div", { class: "actions" },
+        h("button", { onclick: () => openQuick(meal, cleared) }, "Quick add calories"),
+        h("button", { onclick: () => openCustom(meal, input.value.trim(), cleared) }, "Add my own food")),
+      results, bar];
   });
 }
 
@@ -405,6 +429,14 @@ function openPortion(row, meal, { entry = null, last = null, onAdded = null } = 
   const amountNow = () => { const v = parseFloat(qty.value); return v > 0 && Number.isFinite(v) ? v : 0; };
 
   function drawChips() {
+    // Many portions become a dropdown, so the sheet keeps its height and never needs scrolling.
+    if (portions.length > 3) {
+      const select = h("select", { "aria-label": "Portion", onchange: () => { chosen = portions[+select.value]; qty.value = qtyFor(chosen); draw(); } },
+        portions.map((portion, i) => h("option", { value: i }, portion[0] === "g" ? "Grams" : portion[0])));
+      select.value = portions.indexOf(chosen);
+      chips.replaceChildren(select);
+      return;
+    }
     chips.replaceChildren(...portions.map((portion) => h("button", {
       "aria-pressed": String(portion === chosen),
       onclick: () => { chosen = portion; qty.value = qtyFor(portion); drawChips(); draw(); },
@@ -514,7 +546,7 @@ function openGoal(firstRun = false) {
   function draw() {
     const goal = suggestGoal(profile());
     result.replaceChildren(...goal
-      ? [h("b", {}, `${fmt(goal)} kcal`), h("p", { class: "note" }, "A starting estimate from the Mifflin-St Jeor formula, never below 1,200. Adjust it once you see how your weight responds.")]
+      ? [h("p", { class: "note" }, "A starting estimate from the Mifflin-St Jeor formula, never below 1,200.")]
       : [h("p", { class: "note" }, "Enter your age, height and weight to see a daily goal.")]);
     use.disabled = !goal;
     use.textContent = goal ? `Use ${fmt(goal)} kcal a day` : "Use this goal";
@@ -530,7 +562,7 @@ function openGoal(firstRun = false) {
 
   draw();
   openLayer("full", () => [head(firstRun ? "Set your daily goal" : "Work out my goal"),
-    form(apply, sexL, h("div", { class: "grid3" }, ageL, heightL, weightL), activityL, paceL, result, use,
+    form(apply, h("div", { class: "grid2 goalform" }, sexL, ageL, heightL, weightL), h("div", { class: "goalform" }, activityL, paceL), result, use,
       firstRun && h("button", { type: "button", class: "link skip", onclick: () => closeTop() }, `Keep ${fmt(state.goal)} kcal for now`))]);
 }
 
@@ -610,11 +642,11 @@ function openSettings() {
     h("div", { class: "stack" },
       h("section", {}, form(saveGoal, h("label", {}, "Daily goal, kcal", goal), status, h("div", {}, h("button", { class: "outline" }, "Save goal"), h("button", { type: "button", class: "outline", onclick: () => openGoal() }, "Work out my goal")))),
       h("section", {}, h("h3", {}, "Backup"),
-        h("p", { class: "note" }, `Your diary is stored only on this phone. Export a backup before you change phones or clear browser data. ${state.lastBackup ? `Last backup: ${state.lastBackup}.` : "You haven't made a backup yet."}`),
+        h("p", { class: "note" }, `${backupDue(state.days, state.lastBackup, isoDate()) ? "It's time to export a backup. " : ""}Your diary is only on this phone. ${state.lastBackup ? `Last backup: ${state.lastBackup}.` : "You haven't made a backup yet."}`),
         h("button", { class: "outline", onclick: exportBackup }, "Export backup"),
         h("button", { class: "outline", onclick: () => picker.click() }, "Restore backup"), picker),
-      h("section", {}, h("h3", {}, "Where the numbers come from"),
-        h("p", { class: "note" }, `${foods.length ? `${fmt(foods.length)} foods` : "Foods"} from USDA FoodData Central (FNDDS 2021–2023 and SR Legacy) and the Indian Nutrient Databank (Vijayakumar et al., 2024), plus packaged products from Open Food Facts (ODbL). Indian recipe figures are estimates and packaged figures are added by volunteers. Rows that failed sanity checks were removed.`)))]);
+      h("section", {}, h("details", {}, h("summary", {}, "Where the numbers come from"),
+        h("p", { class: "note" }, `${foods.length ? `${fmt(foods.length)} foods` : "Foods"} from USDA FoodData Central (FNDDS 2021–2023 and SR Legacy) and the Indian Nutrient Databank (Vijayakumar et al., 2024), plus packaged products from Open Food Facts (ODbL). Indian recipe figures are estimates and packaged figures are added by volunteers. Rows that failed sanity checks were removed.`))))]);
 }
 
 const redrawSearch = () => document.querySelector("dialog[open] input[type=search]")?.dispatchEvent(new Event("input"));
@@ -625,13 +657,7 @@ $("today").onclick = () => goTo(isoDate());
 $("add").onclick = () => openSearch(mealForHour(new Date().getHours()));
 $("settings-open").onclick = openSettings;
 $("of").onclick = openSettings;
-$("strip").onclick = () => scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" });
-
-// A slim bar keeps the number in view once the big one has scrolled away.
-new IntersectionObserver(([e]) => {
-  document.body.classList.toggle("scrolled", !e.isIntersecting);
-  $("strip").inert = e.isIntersecting;
-}, { rootMargin: "-60px 0px 0px 0px" }).observe($("hero"));
+$("week-open").onclick = openWeek;
 
 // Swipe sideways between days. Edge starts are left alone: iOS uses them for its own gestures.
 let swipe = null;
