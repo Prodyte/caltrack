@@ -1,14 +1,14 @@
 {
   "name": "CalTrack",
   "short_name": "CalTrack",
-  "description": "A private calorie tracker that works offline.",
+  "description": "A private calorie and nutrition tracker that works offline.",
   "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#DDE2DF",
-  "theme_color": "#DDE2DF",
+  "background_color": "#F4F6F5",
+  "theme_color": "#F4F6F5",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },

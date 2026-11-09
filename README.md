@@ -4,6 +4,16 @@ A calorie tracker for your phone. It works offline, installs to the home screen 
 
 Open https://prodyte.github.io/caltrack/ and add it to the home screen. On iPhone use Safari, Share, Add to Home Screen. On Android use Chrome, menu, Install app.
 
+## What it does
+
+- **Today**: a calories ring with what's left, protein (emphasised), carbs and fat against targets, exercise added to the day's budget, per-meal totals, and one observation worked out from your log, with quick-add picks from your own protein-rich foods.
+- **Logging**: search with recent, frequent and favourite foods, saved meals, copy a meal from any earlier day, quick add, your own foods with a serving weight, grams or ounces, and "Describe a meal" ("2 boiled eggs, 150 g chicken breast and a banana"), which is parsed on the phone into foods you review before adding.
+- **Trends**: 7 days, 30 days, 90 days (weekly averages) or a year (monthly) of calories, protein, carbs and fat against targets, target consistency, comparison with the previous period, and a maintenance estimate from intake and weight.
+- **Weight**: daily weigh-ins, a smoothed trend, weekly rate, weekly average and time to a target weight.
+- **Targets**: Mifflin-St Jeor calories plus protein by body weight, all editable, kg or lb.
+
+Pure logic is in `logic.js` and tested by `scripts/check.mjs`; the interface is `app.js` and `index.html`, with no build step or dependencies.
+
 ## Food data
 
 `foods.json` holds nutrients per 100 g plus portion weights, merged from:

@@ -124,11 +124,179 @@ export function backupDue(days, lastBackup, today) {
   return logged >= 14 && (!lastBackup || shiftDate(lastBackup, 30) <= today);
 }
 
+const round5 = (n) => Math.round(n / 5) * 5;
+
+// Used until someone sets macro targets: 20% protein, 50% carbs, 30% fat.
+export function defaultMacros(kcal) {
+  return { p: round5((kcal * 0.2) / 4), c: round5((kcal * 0.5) / 4), f: round5((kcal * 0.3) / 9) };
+}
+
+// Protein by body weight (1.8 g/kg while losing, 1.6 otherwise), fat at 30% of calories, carbs fill the rest.
+// A lower target weight is used for protein so heavier people aren't told to eat for weight they want to lose.
+export function suggestTargets(profile) {
+  const kcal = suggestGoal(profile);
+  if (!kcal) return null;
+  const ref = profile.target > 0 && profile.target < profile.weight ? profile.target : profile.weight;
+  const p = round5(ref * (PACE[profile.pace] < 0 ? 1.8 : 1.6));
+  const f = round5((kcal * 0.3) / 9);
+  return { kcal, p, f, c: Math.max(0, round5((kcal - p * 4 - f * 9) / 4)) };
+}
+
+export const LB = 0.45359237;
+export const OZ = 28.349523;
+export const toUnit = (kg, unit) => (unit === "lb" ? kg / LB : kg);
+export const fromUnit = (v, unit) => (unit === "lb" ? v * LB : v);
+
+export function daysBetween(a, b) {
+  const utc = (iso) => { const [y, m, d] = iso.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  return Math.round((utc(b) - utc(a)) / 864e5);
+}
+
+export const datesEnding = (end, count) => Array.from({ length: count }, (_, i) => shiftDate(end, i - count + 1));
+
+// Foods logged on at least two days in the window, most often first.
+export function frequent(days, today, windowDays = 30, limit = 30) {
+  const counts = new Map();
+  for (const date of datesEnding(today, windowDays)) {
+    const seen = new Set();
+    for (const e of days[date] || []) {
+      if (e.src === "Q" || seen.has(e.name)) continue;
+      seen.add(e.name);
+      const c = counts.get(e.name) || { entry: e, count: 0 };
+      counts.set(e.name, { entry: e, count: c.count + 1 });
+    }
+  }
+  return [...counts.values()].filter((c) => c.count >= 2).sort((a, b) => b.count - a.count).slice(0, limit);
+}
+
+// The recent foods that add the most protein for their calories, at the amount usually eaten.
+export function proteinIdeas(recents, kcalLeft, limit = 2) {
+  return [...recents.values()].map((e) => ({ e, n: nutrition(e) }))
+    .filter(({ n }) => n.p >= 8 && (kcalLeft <= 0 || n.kcal <= kcalLeft))
+    .sort((a, b) => b.n.p / Math.max(1, b.n.kcal) - a.n.p / Math.max(1, a.n.kcal))
+    .slice(0, limit).map(({ e }) => e);
+}
+
+const NUMBER_WORDS = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, half: 0.5, quarter: 0.25, couple: 2 };
+const UNIT_WORDS = {
+  g: "g", gm: "g", gms: "g", gram: "g", grams: "g", gr: "g", kg: "kg", ml: "ml", l: "l", litre: "l", liter: "l", oz: "oz", ounce: "oz", ounces: "oz",
+  cup: "cup", cups: "cup", glass: "glass", glasses: "glass", bowl: "bowl", bowls: "bowl", katori: "bowl", katoris: "bowl", plate: "plate", plates: "plate",
+  slice: "slice", slices: "slice", piece: "piece", pieces: "piece", pc: "piece", pcs: "piece", tbsp: "tbsp", tablespoon: "tbsp", tablespoons: "tbsp",
+  tsp: "tsp", teaspoon: "tsp", teaspoons: "tsp", scoop: "scoop", scoops: "scoop", serving: "serving", servings: "serving",
+};
+// What each unit is called in the datasets' portion names.
+const UNIT_LABELS = { cup: ["cup"], glass: ["glass", "cup"], bowl: ["bowl", "katori", "cup"], plate: ["plate", "serving"], slice: ["slice"],
+  piece: ["piece", "item", "pc"], tbsp: ["tbsp", "tablespoon"], tsp: ["tsp", "teaspoon"], scoop: ["scoop", "serving"], serving: ["serving"] };
+
+function quantity(token) {
+  if (token === "½") return 0.5;
+  if (/^\d+\/\d+$/.test(token)) { const [a, b] = token.split("/").map(Number); return b ? a / b : null; }
+  if (/^\d*\.?\d+$/.test(token)) return parseFloat(token);
+  return NUMBER_WORDS[token] ?? null;
+}
+
+// "2 boiled eggs, 150g chicken breast and a banana" -> one item per food, each with an amount and the words to search.
+// ponytail: plain word rules, not a language model; anything it misreads is fixed on the review screen.
+export function parseMeal(text) {
+  return text.toLowerCase().split(/[,;\n+&]|\band\b|\bplus\b/).map((s) => s.trim()).filter(Boolean).map((part) => {
+    const tokens = part.replace(/(\d)([a-z])/g, "$1 $2").replace(/([a-z])(\d)/g, "$1 $2").split(/\s+/);
+    let qty = null, unit = null;
+    while (tokens.length > 1 && quantity(tokens[0]) !== null) {
+      const v = quantity(tokens.shift());
+      qty = qty === null ? v : qty * v; // "half a banana" is 0.5 x 1
+    }
+    if (tokens[0] === "x" && tokens.length > 1) tokens.shift();
+    if (UNIT_WORDS[tokens[0]] && tokens.length > 1) unit = UNIT_WORDS[tokens.shift()];
+    if (tokens[0] === "of" && tokens.length > 1) tokens.shift();
+    // "chicken breast 150 g": the amount can come last too.
+    const n = tokens.length;
+    if (qty === null && n > 2 && quantity(tokens[n - 2]) !== null && UNIT_WORDS[tokens[n - 1]]) {
+      unit = UNIT_WORDS[tokens.pop()];
+      qty = quantity(tokens.pop());
+    } else if (qty === null && n > 1 && quantity(tokens[n - 1]) !== null) qty = quantity(tokens.pop());
+    return { text: part, qty: qty ?? 1, unit, query: tokens.join(" ") };
+  }).filter((item) => item.query && item.qty > 0);
+}
+
+// Turns a parsed amount into one of the food's portions: [label, grams per unit, quantity].
+export function portionFor(row, { qty, unit, query }) {
+  if (unit === "g" || unit === "ml") return ["g", 1, qty]; // ponytail: ml taken as grams, near enough for drinks and dal
+  if (unit === "kg" || unit === "l") return ["g", 1, qty * 1000];
+  if (unit === "oz") return ["oz", OZ, qty];
+  const portions = row[6];
+  const has = (words) => portions.find(([label]) => words.some((w) => new RegExp(`\\b${w}`).test(label.toLowerCase())));
+  const nouns = query.replace(/[^a-z0-9 ]/g, " ").split(" ").filter((w) => w.length > 2).flatMap((w) => (w.endsWith("s") ? [w, w.slice(0, -1)] : [w]));
+  const found = (unit && has(UNIT_LABELS[unit])) || (!unit && (has(nouns) || has(["medium"]) || has(["piece", "item", "serving"])
+    || portions.find(([label]) => !/inch|cubic|slice|oz|cup|tbsp|tsp|tablespoon|teaspoon/.test(label))));
+  if (found) return [found[0], found[1], qty];
+  if (portions.length && unit) return [portions[0][0], portions[0][1], qty];
+  return portions.length ? [portions[0][0], portions[0][1], qty] : ["g", 1, qty * 100];
+}
+
+// Exponentially smoothed weight, about a ten-day memory, that bridges gaps between weigh-ins.
+export function weightTrend(weights) {
+  let trend = null, prev = null;
+  return Object.keys(weights).sort().map((date) => {
+    const w = weights[date];
+    trend = trend === null ? w : trend + (1 - 0.9 ** daysBetween(prev, date)) * (w - trend);
+    prev = date;
+    return { date, weight: w, trend };
+  });
+}
+
+// Trend change per week over the last two weeks or so; null until a week of data spans it.
+export function weeklyRate(series, today) {
+  if (series.length < 2) return null;
+  const last = series.at(-1);
+  const from = series.findLast((s) => daysBetween(s.date, last.date) >= 14) || series[0];
+  const span = daysBetween(from.date, last.date);
+  if (span < 7 || daysBetween(last.date, today) > 14) return null;
+  return ((last.trend - from.trend) / span) * 7;
+}
+
+// Weeks to reach the target at the current rate, only when heading towards it.
+export function weeksToTarget(trend, target, rate) {
+  if (!target || rate === null || Math.abs(rate) < 0.05) return null;
+  const weeks = (target - trend) / rate;
+  return weeks > 0 && weeks < 520 ? weeks : null;
+}
+
+const sum = (list) => list.reduce((a, b) => a + b, 0);
+export const burnedTotal = (burned = []) => sum(burned.map((b) => b.kcal));
+
+// Finished, logged days only: today is half done and an unlogged day is unknown, not zero.
+export function summarize(days, dates, targets, today, burned = {}) {
+  const done = dates.filter((d) => d !== today && days[d]?.length).map((d) => ({ ...totals(days[d]), goal: targets.kcal + burnedTotal(burned[d]) }));
+  if (!done.length) return null;
+  const avg = (k) => sum(done.map((t) => t[k])) / done.length;
+  return {
+    logged: done.length, kcal: avg("kcal"), p: avg("p"), c: avg("c"), f: avg("f"), goal: avg("goal"),
+    proteinHit: done.filter((t) => Math.round(t.p) >= targets.p).length,
+    onTarget: done.filter((t) => Math.abs(t.kcal - t.goal) <= t.goal * 0.1).length,
+  };
+}
+
+// Energy out estimated from intake and how the weight trend moved: about 7,700 kcal per kg of body weight.
+export function maintenance(days, weights, today) {
+  const window = datesEnding(shiftDate(today, -1), 28);
+  const stats = summarize(days, window, { kcal: 0, p: 0 }, today);
+  const series = weightTrend(weights).filter((s) => s.date >= window[0] && s.date < today);
+  if (!stats || stats.logged < 14 || series.length < 4) return null;
+  const span = daysBetween(series[0].date, series.at(-1).date);
+  if (span < 14) return null;
+  return Math.round((stats.kcal - ((series.at(-1).trend - series[0].trend) * 7700) / span) / 50) * 50;
+}
+
 // Backups come from a file the user picks, so check the shape before replacing their diary.
 export function validBackup(data) {
   const num = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  const entry = (e) => typeof e.name === "string" && typeof e.label === "string" && MEALS.includes(e.meal) && [e.kcal, e.p, e.c, e.f, e.grams, e.qty].every(num);
+  const dated = (obj, ok) => obj === undefined || (typeof obj === "object" && obj !== null && Object.entries(obj).every(([d, v]) => /^\d{4}-\d{2}-\d{2}$/.test(d) && ok(v)));
   return Boolean(data) && num(data.goal) && data.goal > 0 && Array.isArray(data.custom) && typeof data.days === "object" && data.days !== null
-    && Object.entries(data.days).every(([date, list]) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Array.isArray(list)
-      && list.every((e) => typeof e.name === "string" && typeof e.label === "string" && MEALS.includes(e.meal)
-        && [e.kcal, e.p, e.c, e.f, e.grams, e.qty].every(num)));
+    && dated(data.days, (list) => Array.isArray(list) && list.every(entry))
+    && dated(data.weights, (w) => num(w) && w > 0)
+    && dated(data.burned, (list) => Array.isArray(list) && list.every((b) => typeof b.name === "string" && num(b.kcal)))
+    && (data.macros === undefined || [data.macros.p, data.macros.c, data.macros.f].every(num))
+    && (data.saved === undefined || (Array.isArray(data.saved) && data.saved.every((s) => typeof s.name === "string" && Array.isArray(s.items) && s.items.every(entry))))
+    && (data.favs === undefined || (Array.isArray(data.favs) && data.favs.every((f) => typeof f === "string")));
 }

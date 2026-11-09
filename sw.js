@@ -1,12 +1,14 @@
 // Serves from cache at once and refreshes in the background, so the app opens offline and updates itself.
-const CACHE = "caltrack-1";
+const CACHE = "caltrack-2";
 const FILES = ["./", "index.html", "app.js", "logic.js", "foods.json", "packaged.json", "gabarito.woff2", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
 });
 
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("activate", (e) => e.waitUntil(caches.keys()
+  .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+  .then(() => self.clients.claim())));
 
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET" || !e.request.url.startsWith(self.location.origin)) return;
