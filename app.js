@@ -222,7 +222,7 @@ function goTo(d) {
   date = d;
   render();
   if (calm) return;
-  for (const el of [$("insight"), $("meals")]) {
+  for (const el of [$("macros"), $("insight"), $("meals")]) {
     el.animate([{ opacity: 0, transform: `translateX(${dir * 24}px)` }, { opacity: 1, transform: "none" }], { duration: 240, easing: EASE });
   }
 }
@@ -256,7 +256,10 @@ function render() {
   const left = budget - t.kcal;
   const over = Math.round(left) < 0;
 
-  $("dayname").textContent = dayName(date);
+  const long = (opts) => new Date(`${date}T12:00`).toLocaleDateString("en-IN", opts);
+  const near = date === today || date === shiftDate(today, -1);
+  $("dayname").textContent = near ? dayName(date) : long({ weekday: "long" });
+  $("daysub").textContent = long({ weekday: near ? "long" : undefined, day: "numeric", month: "long", year: date.slice(0, 4) === today.slice(0, 4) ? undefined : "numeric" });
   $("datepick").value = date;
   $("datepick").max = today;
   $("next").disabled = date >= today;
@@ -272,17 +275,17 @@ function render() {
   $("leftlabel").textContent = over ? "kcal over" : "kcal left";
   $("leftlabel").classList.toggle("over", over);
   $("eaten").textContent = fmt(t.kcal);
-  $("burned").textContent = fmt(burned);
+  $("burned").textContent = burned ? `+${fmt(burned)}` : "Add";
   $("target").textContent = fmt(goal.kcal);
   $("target-open").setAttribute("aria-label", `Target ${fmt(goal.kcal)} kcal. Change targets`);
   $("burned-open").setAttribute("aria-label", `Exercise ${fmt(burned)} kcal. Log exercise`);
 
   $("macros").replaceChildren(...MACROS.map(([k, label, cls]) => {
-    const togo = goal[k] - t[k];
+    const togo = Math.round(goal[k] - t[k]);
     return h("div", { class: `macro ${cls}${k === "p" ? " big" : ""}` },
-      h("div", { class: "mhead" }, h("span", { class: "mname" }, label), h("span", { class: "mval" }, h("b", {}, fmt(t[k])), ` / ${fmt(goal[k])} g`)),
+      h("span", { class: "mname" }, label), h("span", { class: "mval" }, h("b", {}, fmt(t[k])), ` / ${fmt(goal[k])} g`),
       h("div", { class: "meter", "aria-hidden": "true" }, h("i", { style: `width:${pct(t[k], goal[k])}%` })),
-      k === "p" && (Math.round(togo) > 0 ? h("small", {}, `${fmt(togo)} g to go`) : h("small", { class: "met" }, "Target reached")));
+      togo > 0 ? h("small", {}, `${fmt(togo)} g to go`) : k === "p" ? h("small", { class: "met" }, "Target reached") : h("small", {}, togo ? `${fmt(-togo)} g over` : "On target"));
   }));
 
   renderInsight({ t, goal, left, over, list, today });
@@ -307,6 +310,7 @@ function render() {
   $("settings-open").setAttribute("aria-label", due ? "Settings, backup due" : "Settings");
   renderWeek();
   renderWeightRow(today);
+  if (view === "trends") drawTrends();
 }
 
 // One observation at a time, always worked out from what's logged. Over target is stated plainly, without alarm.
@@ -352,13 +356,11 @@ function weekWindow() {
 
 function renderWeek() {
   const { today, dates, kcals, top } = weekWindow();
-  const avg = averageKcal(dates, kcals, today);
-  $("weekavg").textContent = avg ? `Avg ${fmt(avg.kcal)} kcal · Trends ›` : "Trends ›";
   $("week").replaceChildren(...dates.map((d, i) => {
     const goal = state.goal + burnedOn(d);
     const high = Math.round(kcals[i]) > goal;
     return h("button", { class: `wk${d === date ? " now" : ""}${high ? " high" : ""}${kcals[i] ? "" : " empty"}`,
-      "aria-label": `${dayName(d)}: ${fmt(kcals[i])} kcal${high ? ", over target" : ""}`, onclick: () => goTo(d) },
+      "aria-label": `${dayName(d)}: ${fmt(kcals[i])} kcal${high ? ", over target" : ""}`, "aria-current": d === date ? "date" : "false", onclick: () => goTo(d) },
       h("span", { class: "track" }, h("u", { style: `bottom:${(goal / top) * 100}%` }), h("i", { style: `height:${(kcals[i] / top) * 100}%` })),
       h("span", {}, dayLabel(d)));
   }));
@@ -371,8 +373,8 @@ function renderWeightRow(today) {
   const todays = state.weights[date];
   $("weight-open").replaceChildren(icon("scale"),
     h("span", { class: "text" }, last
-      ? [h("b", {}, `Trend ${showWeight(last.trend)}`), h("small", {}, rate === null ? "  Keep weighing in to see your rate" : `  ${rate > 0 ? "+" : "−"}${showWeight(Math.abs(rate), 2)} a week`)]
-      : [h("b", {}, "Log your weight"), h("small", {}, "  The trend appears after a few weigh-ins")]),
+      ? [h("b", {}, `Weight trend ${showWeight(last.trend)}`), h("small", {}, rate === null ? "Keep weighing in to see your rate" : `${rate > 0 ? "+" : "−"}${showWeight(Math.abs(rate), 2)} a week`)]
+      : [h("b", {}, "Log your weight"), h("small", {}, "The trend appears after a few weigh-ins")]),
     h("small", {}, todays ? showWeight(todays) : date === today ? "Add today" : "Add"), icon("chev"));
 }
 
@@ -495,6 +497,11 @@ function openSearch(meal) {
   const tabs = segmented([["recent", "Recent"], ["frequent", "Frequent"], ["favs", "Favourites"], ["meals", "Meals"]], lastTab, (t) => { lastTab = t; draw(); }, "Show", "seg tabs");
 
   const cleared = () => { input.value = ""; draw(); results.scrollTop = 0; };
+  const way = (name, label, onclick) => h("button", { onclick }, icon(name), label);
+  const ways = h("div", { class: "actions" },
+    way("text", "Describe meal", () => openDescribe(meal, "", cleared)),
+    way("bolt", "Quick add", () => openQuick(meal, cleared)),
+    way("plus", "Create food", () => openCustom(meal, "", cleared)));
 
   function foodRow(row, last = recents.get(row[0])) {
     last = last?.src === row[1] && last?.name === row[0] ? last : null;
@@ -543,7 +550,7 @@ function openSearch(meal) {
     recents = recentNames(state.days);
     tabs.hidden = Boolean(q);
     const offline = foodsFailed ? h("p", { class: "error" }, "The food list has not downloaded. Connect to the internet and reopen CalTrack. Your own foods still work.") : null;
-    if (!q) { results.replaceChildren(...[offline, ...browse()].filter(Boolean)); return; }
+    if (!q) { results.replaceChildren(...[offline, ways, ...browse()].filter(Boolean)); return; }
     // Typing a list of foods offers to log them all at once.
     const parts = parseMeal(q);
     const many = parts.length > 1 || (parts[0] && (parts[0].unit || /^\d|^(half|one|two|three|a|an) /.test(q)));
@@ -569,12 +576,7 @@ function openSearch(meal) {
     // The keyboard would cover the recent foods most people came to tap, so only raise it when there are none.
     layer.opened = () => { if (!recents.size) input.focus(); };
     return [head(date === isoDate() ? "Add food" : `Add food, ${dayName(date)}`),
-      mealPicker(meal, (m) => { meal = m; draw(); }), input,
-      h("div", { class: "actions" },
-        h("button", { onclick: () => openDescribe(meal, "", cleared) }, "Describe a meal"),
-        h("button", { onclick: () => openQuick(meal, cleared) }, "Quick add"),
-        h("button", { onclick: () => openCustom(meal, input.value.trim(), cleared) }, "Create food")),
-      tabs, results, bar];
+      mealPicker(meal, (m) => { meal = m; draw(); }), input, tabs, results, bar];
   });
 }
 
@@ -987,10 +989,9 @@ function weightChart(range, today, width) {
 const tile = (label, value, small, note) => h("div", { class: "tile" }, h("span", {}, label), h("b", {}, value, small && h("small", {}, ` ${small}`)), note && h("em", {}, note));
 const signed = (n, unit) => `${n > 0 ? "+" : "−"}${fmt(Math.abs(n))}${unit}`;
 
-function openTrends() {
-  const body = h("div", { class: "stack" });
-  const ranges = segmented(Object.entries(RANGES).map(([k, v]) => [+k, v]), trendRange, (r) => { trendRange = r; draw(); }, "Range");
-  function draw() {
+function drawTrends() {
+  const body = $("trends-body"), draw = drawTrends;
+  {
     const today = isoDate();
     const goal = targets();
     const range = trendRange;
@@ -1030,15 +1031,29 @@ function openTrends() {
       h("div", { class: "wslot" }),
       h("p", { class: "note" }, "The trend smooths out daily swings from water, salt and food, so a heavy morning isn't read as fat gained."));
 
-    body.replaceChildren(h("section", {}, ranges, ...nutritionPart), chartPart, weightSection,
-      h("section", {}, h("p", { class: "note" }, "Targets and estimates come from formulas and food tables, so treat them as a starting point. If your weight trend isn't moving the way you want after 2–3 weeks, adjust your calorie target by 100–200 kcal.")));
-    requestAnimationFrame(() => { const slot = body.querySelector(".wslot"); if (slot) slot.replaceChildren(weightChart(range, today, Math.max(240, slot.clientWidth))); });
+    body.replaceChildren(h("section", {}, ...nutritionPart), chartPart, weightSection,
+      h("p", { class: "note" }, "Targets and estimates come from formulas and food tables, so treat them as a starting point. If your weight trend isn't moving the way you want after 2–3 weeks, adjust your calorie target by 100–200 kcal."));
+    const slot = body.querySelector(".wslot");
+    slot.replaceChildren(weightChart(range, today, Math.max(240, slot.clientWidth)));
   }
-  openLayer("full", (layer) => {
-    layer.refresh = draw;
-    layer.opened = draw;
-    return [head("Trends"), body];
-  });
+}
+
+// ——— Screens ———
+
+let view = "day";
+function show(next) {
+  if (next === view) { if (next === "day") goTo(isoDate()); scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" }); return; }
+  const swap = () => {
+    view = next;
+    for (const b of document.querySelectorAll(".dock button")) {
+      $(b.dataset.view).hidden = b.dataset.view !== next;
+      if (b.dataset.view === next) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    }
+    if (next === "settings") $("settings-body").replaceChildren(...settings());
+    render();
+    scrollTo(0, 0);
+  };
+  if (calm || !document.startViewTransition) swap(); else document.startViewTransition(swap);
 }
 
 // ——— Goals and settings ———
@@ -1089,7 +1104,7 @@ function openGoal(firstRun = false) {
     state.macros = { p: t.p, c: t.c, f: t.f };
     state.profile = profile();
     state.units = { ...state.units, weight: unit };
-    if (save()) { closeAll(); render(); toast("Targets updated"); }
+    if (save()) { closeAll().then(() => { if (view === "settings") $("settings-body").replaceChildren(...settings()); toast("Targets updated"); }); }
   }
 
   draw();
@@ -1113,7 +1128,7 @@ async function exportBackup() {
   done();
 }
 
-function openSettings() {
+function settings() {
   const goal = targets();
   const [kcalL, kcalI] = numberField("Calories", goal.kcal, { inputMode: "numeric", oninput: () => drawSum() });
   const [pL, pI] = numberField("Protein, g", goal.p, { inputMode: "numeric", oninput: () => drawSum() });
@@ -1140,8 +1155,8 @@ function openSettings() {
       if (!confirm(`Replace everything in CalTrack with this backup of ${days} days?`)) return;
       state = upgrade({ ...data, onboarded: true });
       save();
-      render();
-      closeAll();
+      show("day");
+      toast("Backup restored");
     } catch {
       status.textContent = "That file is not a CalTrack backup. Nothing was changed.";
     } finally {
@@ -1159,7 +1174,7 @@ function openSettings() {
     state.goal = kcal;
     state.macros = { p, c, f };
     state.profile = { ...state.profile, target };
-    if (save()) { render(); closeTop(); toast("Targets saved"); }
+    if (save()) { status.textContent = ""; render(); toast("Targets saved"); }
   }
 
   const setUnit = (kind) => (u) => {
@@ -1171,21 +1186,20 @@ function openSettings() {
     state.units = { ...state.units, [kind]: u }; save(); render();
   };
   drawSum();
-  openLayer("full", () => [head("Settings"),
-    h("div", { class: "stack" },
+  return [
       h("section", {}, h("h3", {}, "Daily targets"),
         form(saveTargets, h("div", { class: "grid2" }, kcalL, pL, cL, fL), sum, tL, status,
-          h("div", {}, h("button", { class: "outline" }, "Save targets"), h("button", { type: "button", class: "outline", onclick: () => openGoal() }, "Work them out for me")))),
+          h("button", { class: "primary" }, "Save targets"), h("button", { type: "button", class: "outline", onclick: () => openGoal() }, "Work them out for me"))),
       h("section", {}, h("h3", {}, "Units"),
-        h("p", { class: "note" }, "Body weight"), segmented([["kg", "Kilograms"], ["lb", "Pounds"]], state.units.weight, setUnit("weight"), "Body weight unit"),
-        h("p", { class: "note" }, "Food amounts"), segmented([["g", "Grams"], ["oz", "Ounces"]], state.units.food, setUnit("food"), "Food amount unit")),
+        h("p", { class: "subhead" }, "Body weight"), segmented([["kg", "Kilograms"], ["lb", "Pounds"]], state.units.weight, setUnit("weight"), "Body weight unit"),
+        h("p", { class: "subhead" }, "Food amounts"), segmented([["g", "Grams"], ["oz", "Ounces"]], state.units.food, setUnit("food"), "Food amount unit")),
       h("section", {}, h("h3", {}, "Backup"),
         h("p", { class: "note" }, `${backupDue(state.days, state.lastBackup, isoDate()) ? "It's time to export a backup. " : ""}Your diary is only on this phone. ${state.lastBackup ? `Last backup: ${state.lastBackup}.` : "You haven't made a backup yet."}`),
         h("button", { class: "outline", onclick: exportBackup }, "Export backup"),
         h("button", { class: "outline", onclick: () => picker.click() }, "Restore backup"), picker),
       h("section", {}, h("details", {}, h("summary", {}, "Where the numbers come from"),
         h("p", { class: "note" }, `${foods.length ? `${fmt(foods.length)} foods` : "Foods"} from USDA FoodData Central (FNDDS 2021–2023 and SR Legacy) , the Indian Nutrient Databank (Vijayakumar et al., 2024), the UK's Composition of Foods Integrated Dataset 2021 (Crown copyright, Open Government Licence v3.0) and the Australian Food Composition Database Release 3 (Food Standards Australia New Zealand, CC BY 4.0), plus packaged products from Open Food Facts (ODbL). Indian recipe figures are estimates and packaged figures are added by volunteers. UK and Australian foods are logged by weight, as those tables have no portion sizes. Rows that failed sanity checks were removed.`),
-        h("p", { class: "note" }, "Calorie targets use the Mifflin-St Jeor equation; maintenance estimates assume about 7,700 kcal per kg of body weight. Both are estimates."))))]);
+        h("p", { class: "note" }, "Calorie targets use the Mifflin-St Jeor equation; maintenance estimates assume about 7,700 kcal per kg of body weight. Both are estimates.")))];
 }
 
 // ——— Wiring ———
@@ -1196,18 +1210,17 @@ $("today").onclick = () => goTo(isoDate());
 $("datepick").onchange = (e) => { if (e.target.value) goTo(e.target.value); };
 $("datepick").onclick = (e) => { try { e.target.showPicker(); } catch { /* the native control opens itself */ } };
 $("add").onclick = () => openSearch(date === isoDate() ? mealForHour(new Date().getHours()) : "Lunch");
-$("settings-open").onclick = openSettings;
-$("target-open").onclick = openSettings;
+for (const b of document.querySelectorAll(".dock button")) b.onclick = () => show(b.dataset.view);
+$("target-open").onclick = () => show("settings");
 $("burned-open").onclick = openBurned;
-$("trends-open").onclick = openTrends;
-$("week-head").onclick = openTrends;
+$("trends-range").append(segmented(Object.entries(RANGES).map(([k, v]) => [+k, v]), trendRange, (r) => { trendRange = r; drawTrends(); }, "Range"));
 $("weight-open").onclick = openWeight;
 
 // Swipe sideways between days. Edge starts are left alone: iOS uses them for its own gestures.
 let swipe = null;
 document.addEventListener("touchstart", (e) => {
   const t = e.touches[0];
-  swipe = !layers.length && e.touches.length === 1 && t.clientX > 24 && t.clientX < innerWidth - 24 && !e.target.closest(".ideas") ? { x: t.clientX, y: t.clientY, at: e.timeStamp } : null;
+  swipe = view === "day" && !layers.length && e.touches.length === 1 && t.clientX > 24 && t.clientX < innerWidth - 24 && !e.target.closest(".ideas") ? { x: t.clientX, y: t.clientY, at: e.timeStamp } : null;
 }, { passive: true });
 document.addEventListener("touchend", (e) => {
   if (!swipe) return;
@@ -1222,7 +1235,7 @@ document.addEventListener("touchend", (e) => {
 
 // Arrow keys step through days on a keyboard.
 document.addEventListener("keydown", (e) => {
-  if (layers.length || e.target.closest("input, select, textarea")) return;
+  if (view !== "day" || layers.length || e.target.closest("input, select, textarea")) return;
   if (e.key === "ArrowLeft") goTo(shiftDate(date, -1));
   if (e.key === "ArrowRight") goTo(shiftDate(date, 1));
 });
