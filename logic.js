@@ -1,7 +1,8 @@
 // Pure logic, no DOM, so scripts/check.mjs can run it under node.
 
 export const MEALS = ["Breakfast", "Lunch", "Dinner", "Snacks"];
-const SOURCE_ORDER = { C: 0, F: 1, I: 2, P: 3, S: 4 };
+// Ties go to sources with portion sizes; the UK (U) and Australian (A) tables have none.
+const SOURCE_ORDER = { C: 0, F: 1, I: 2, P: 3, S: 4, U: 5, A: 6 };
 
 // Names people type here versus the words the datasets use.
 const SYNONYMS = {

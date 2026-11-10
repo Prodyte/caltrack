@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { STAPLES, copyEntries, averageKcal, suggestGoal, suggestTargets, defaultMacros, parseMeal, portionFor, weightTrend, weeklyRate, weeksToTarget, summarize, maintenance, frequent, proteinIdeas, toUnit, fromUnit, backupDue, isoDate, shiftDate, mealForHour, prepare, search, makeEntry, nutrition, totals, recentNames, validBackup } from "../logic.js";
 
-const foods = ["foods.json", "packaged.json"].flatMap((f) => JSON.parse(readFileSync(f, "utf8"))).map(prepare);
+const foods = ["foods.json", "packaged.json", "world.json"].flatMap((f) => JSON.parse(readFileSync(f, "utf8"))).map(prepare);
 const top = (q, recent) => search(foods, q, recent)[0]?.[0];
 
 // Dates stay local and survive month and year ends.
@@ -38,6 +38,12 @@ assert.match(top("amul butter"), /amul/i);
 assert.match(top("good day"), /good day/i);
 assert.match(top("maggi"), /maggi/i);
 assert.ok(foods.filter((f) => f.row[1] === "P").length > 5000);
+
+// UK and Australian tables add dishes the others lack, and lose ties to foods that have portion sizes.
+assert.equal(search(foods, "ghee")[0][1], "F");
+assert.match(top("chicken tikka masala"), /tikka masala/i);
+assert.equal(top("vegemite")?.[0] && search(foods, "vegemite")[0][1], "A");
+assert.ok(foods.filter((f) => "UA".includes(f.row[1])).length > 3500);
 
 // Calories scale by portion and quantity.
 const samosa = [["Samosa", "F", 310, 5, 30, 18, []]][0];

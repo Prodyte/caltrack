@@ -11,7 +11,7 @@ const fmt = (n) => Math.round(n).toLocaleString("en-IN");
 const fmt1 = (n) => (Math.round(n * 10) / 10).toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const EASE = "cubic-bezier(.16,1,.3,1)";
-const SOURCES = { F: "USDA", S: "USDA ingredient", I: "Indian recipe estimate", P: "Packaged, Open Food Facts", C: "My food", Q: "Quick add" };
+const SOURCES = { F: "USDA", S: "USDA ingredient", I: "Indian recipe estimate", U: "UK food tables", A: "Australian food tables", P: "Packaged, Open Food Facts", C: "My food", Q: "Quick add" };
 const MACROS = [["p", "Protein", "protein"], ["c", "Carbs", "carbs"], ["f", "Fat", "fat"]];
 const buzz = (ms = 8) => navigator.vibrate?.(ms);
 
@@ -596,7 +596,9 @@ function openDescribe(meal, text, onAdded) {
       const kept = before.get(part.text);
       if (kept && (kept.rows.length || !foodsLoaded)) return kept;
       const rows = search(allFoods(), part.query, recentSet(), 6);
-      return { part, rows, entry: rows[0] ? entryFor(rows[0], part) : null };
+      // "1 plate biryani" needs a food that knows portions; the UK and Australian tables only know grams.
+      const best = (["g", "kg", "ml", "l", "oz"].includes(part.unit) ? null : rows.find((r) => !"UA".includes(r[1]))) || rows[0];
+      return { part, rows, entry: best ? entryFor(best, part) : null };
     });
     draw();
   }
@@ -635,7 +637,8 @@ function openDescribe(meal, text, onAdded) {
 
 function openPortion(row, meal, { entry = null, last = null, onAdded = null, pick = null } = {}) {
   const [name, src, kcal] = row;
-  const custom = src === "C" || src === "Q";
+  // Own foods saved with a serving weight scale by grams. Rows from before the flag: any weight but the 100 placeholder.
+  const custom = src === "Q" || (src === "C" && !(row[7] ?? (row[6][0]?.[1] ?? 0) !== 100));
   const from = entry || last;
   const portions = [...row[6]];
   if (!custom) portions.push(state.units.food === "oz" ? ["oz", OZ] : ["g", 1]);
@@ -791,7 +794,7 @@ function openCustom(meal, name, onAdded) {
     // With a weight the food scales by grams like any other; without one, a serving counts as 100 "grams".
     const per = grams > 0 ? 100 / grams : 1;
     const values = [num(kcalI), num(pI), num(cI), num(fI)].map((v) => Math.round(v * per * 100) / 100);
-    const row = [title, "C", ...values, [[label, grams > 0 ? grams : 100]]];
+    const row = [title, "C", ...values, [[label, grams > 0 ? grams : 100]], grams > 0];
     state.custom = [row, ...state.custom.filter((r) => r[0] !== title)];
     if (!save()) return;
     await closeTop();
@@ -1159,7 +1162,14 @@ function openSettings() {
     if (save()) { render(); closeTop(); toast("Targets saved"); }
   }
 
-  const setUnit = (kind) => (u) => { state.units = { ...state.units, [kind]: u }; save(); render(); };
+  const setUnit = (kind) => (u) => {
+    // The target weight field still shows the old unit; convert it so Save doesn't read 70 kg as 70 lb.
+    if (kind === "weight" && u !== weightUnit()) {
+      if (tI.value) tI.value = +toUnit(fromUnit(parseFloat(tI.value), weightUnit()), u).toFixed(1);
+      tL.firstChild.textContent = `Target weight, ${u}`;
+    }
+    state.units = { ...state.units, [kind]: u }; save(); render();
+  };
   drawSum();
   openLayer("full", () => [head("Settings"),
     h("div", { class: "stack" },
@@ -1174,7 +1184,7 @@ function openSettings() {
         h("button", { class: "outline", onclick: exportBackup }, "Export backup"),
         h("button", { class: "outline", onclick: () => picker.click() }, "Restore backup"), picker),
       h("section", {}, h("details", {}, h("summary", {}, "Where the numbers come from"),
-        h("p", { class: "note" }, `${foods.length ? `${fmt(foods.length)} foods` : "Foods"} from USDA FoodData Central (FNDDS 2021–2023 and SR Legacy) and the Indian Nutrient Databank (Vijayakumar et al., 2024), plus packaged products from Open Food Facts (ODbL). Indian recipe figures are estimates and packaged figures are added by volunteers. Rows that failed sanity checks were removed.`),
+        h("p", { class: "note" }, `${foods.length ? `${fmt(foods.length)} foods` : "Foods"} from USDA FoodData Central (FNDDS 2021–2023 and SR Legacy) , the Indian Nutrient Databank (Vijayakumar et al., 2024), the UK's Composition of Foods Integrated Dataset 2021 (Crown copyright, Open Government Licence v3.0) and the Australian Food Composition Database Release 3 (Food Standards Australia New Zealand, CC BY 4.0), plus packaged products from Open Food Facts (ODbL). Indian recipe figures are estimates and packaged figures are added by volunteers. UK and Australian foods are logged by weight, as those tables have no portion sizes. Rows that failed sanity checks were removed.`),
         h("p", { class: "note" }, "Calorie targets use the Mifflin-St Jeor equation; maintenance estimates assume about 7,700 kcal per kg of body weight. Both are estimates."))))]);
 }
 
@@ -1251,11 +1261,13 @@ fetch("foods.json")
   .catch(() => { foodsFailed = true; })
   .finally(refreshLayers);
 
-// Packaged foods are a bonus: if this file fails, everything else still works.
-fetch("packaged.json")
-  .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
-  .then((rows) => { addFoods(rows); refreshLayers(); })
-  .catch(() => {});
+// Packaged foods and the UK and Australian tables are a bonus: if these files fail, everything else still works.
+for (const file of ["packaged.json", "world.json"]) {
+  fetch(file)
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then((rows) => { addFoods(rows); refreshLayers(); })
+    .catch(() => {});
+}
 
 if (!state.onboarded) {
   state.onboarded = true;
